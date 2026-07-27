@@ -27,7 +27,7 @@ FEE_RATE = 0.001             # 0.10% per side
 SLIPPAGE_RATE = 0.0005       # 0.05% simulated slippage per side
 
 SCAN_SECONDS = 60
-DB_FILE = "trading_bot.db"
+DB_FILE = "/data/trading_bot.db"
 
 # Public market-data-only endpoint; no API key and no trading permissions.
 BASE_URL = "https://data-api.binance.vision"
