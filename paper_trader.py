@@ -19,6 +19,8 @@ from database import (
     get_position,
 )
 
+print(">>> LOADED paper_trader.py <<<") 
+
 
 def utcnow():
     return datetime.now(timezone.utc).isoformat()
@@ -40,6 +42,8 @@ class PaperTrader:
         return symbol in self.positions
 
     def try_open_position(self, symbol, signal):
+
+        print(">>> ENTER try_open_position <<<")
 
         if self.has_position(symbol):
             return False
