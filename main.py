@@ -39,7 +39,7 @@ last_scan = {}
 
 print("=" * 60)
 print("Trading Bot V2 - PAPER MODE")
-print("Started:", datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"))
+from datetime import datetime, UTC
 print("=" * 60)
 
 def scan_symbol(symbol):
