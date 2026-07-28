@@ -46,6 +46,8 @@ class PaperTrader:
 
         cash = get_cash()
 
+        print(f"[DEBUG] {symbol} Cash={cash:.2f}")
+
         entry = signal["close"] * (1 + SLIPPAGE_RATE)
 
         atr = signal["atr"]
@@ -87,6 +89,7 @@ class PaperTrader:
         )
 
         if not ok:
+            print(f"[OPEN FAILED] {symbol}")
             return False
 
         self.positions[symbol] = {
