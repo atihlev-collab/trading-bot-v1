@@ -19,9 +19,6 @@ from database import (
     get_position,
 )
 
-print(">>> LOADED paper_trader.py <<<") 
-
-
 def utcnow():
     return datetime.now(timezone.utc).isoformat()
 
@@ -41,18 +38,13 @@ class PaperTrader:
 
         return symbol in self.positions
 
-    def try_open_position(self, symbol, signal):
-
-        print(">>> ENTER try_open_position <<<")
+    def try_open_position(self, symbol, signal):       
 
         if self.has_position(symbol):
-            print(f"[ALREADY OPEN] {symbol}")
-            return False
-
-        print(f"[NEW POSITION] {symbol}")
+            
+            return False      
         
-        cash = get_cash()
-        print(f"[DEBUG] {symbol} Cash={cash:.2f}")
+        cash = get_cash()       
 
         cash = get_cash()
 
@@ -99,7 +91,7 @@ class PaperTrader:
         )
 
         if not ok:
-            print(f"[OPEN FAILED] {symbol}")
+            
             return False
 
         self.positions[symbol] = {
