@@ -68,8 +68,6 @@ def scan_symbol(symbol):
     if signal["signal"] != "BUY":
         return
 
-    print(f"[TRY OPEN] {symbol}")
-
     trader.try_open_position(
         symbol,
         signal,
@@ -163,7 +161,7 @@ def maybe_report():
 def main():
 
     print()
-    print("Bot is running... VERSION TEST 123")
+    print("Bot is running...")
     print()
 
     while True:
