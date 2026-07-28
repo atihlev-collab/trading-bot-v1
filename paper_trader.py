@@ -46,7 +46,13 @@ class PaperTrader:
         print(">>> ENTER try_open_position <<<")
 
         if self.has_position(symbol):
+            print(f"[ALREADY OPEN] {symbol}")
             return False
+
+        print(f"[NEW POSITION] {symbol}")
+        
+        cash = get_cash()
+        print(f"[DEBUG] {symbol} Cash={cash:.2f}")
 
         cash = get_cash()
 
