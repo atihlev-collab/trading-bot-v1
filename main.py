@@ -79,9 +79,7 @@ def scan_symbol(symbol):
 # Position Management
 # ===========================================
 
-def manage_positions():
-
-    trader.refresh_positions()
+def manage_positions():   
 
     if not trader.positions:
         return
