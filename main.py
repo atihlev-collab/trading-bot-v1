@@ -79,6 +79,8 @@ def scan_symbol(symbol):
 
 def manage_positions():
 
+    trader.refresh_positions()
+
     if not trader.positions:
         return
 
