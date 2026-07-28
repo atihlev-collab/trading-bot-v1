@@ -163,7 +163,7 @@ def maybe_report():
 def main():
 
     print()
-    print("Bot is running...")
+    print("Bot is running... VERSION TEST 123")
     print()
 
     while True:
