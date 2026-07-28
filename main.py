@@ -1,177 +1,207 @@
 import time
-from datetime import datetime, timezone
+import traceback
+from datetime import datetime
 
 from config import (
     SYMBOLS,
     SCAN_SECONDS,
-    MAX_OPEN_POSITIONS,
-    DAILY_LOSS_LIMIT_PCT,
-    START_BALANCE,
+)
+
+from market_data import (
+    get_candles,
+    get_price,
+)
+
+from strategy import analyze
+
+from paper_trader import (
+    PaperTrader,
+)
+
+from report import (
+    print_report,
 )
 
 from database import (
     init_db,
-    get_positions,
-    get_position,
-    signal_seen,
-    save_signal,
-    today_pnl,
 )
 
-from market_data import get_candles, get_price
-from strategy import analyze
-from paper_trader import paper_buy, paper_sell
-from report import print_report
 
+# ===========================================
+# Initialize
+# ===========================================
 
-last_scan_candle = {}
-last_report = None
+init_db()
 
+trader = PaperTrader()
 
-def now():
-    return datetime.now(timezone.utc)
+last_scan = {}
 
+print("=" * 60)
+print("Trading Bot V2 - PAPER MODE")
+print("Started:", datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"))
+print("=" * 60)
+
+def scan_symbol(symbol):
+
+    df = get_candles(symbol)
+
+    signal = analyze(df)
+
+    candle_time = signal.get("candle_time")
+
+    if candle_time is None:
+        return
+
+    if last_scan.get(symbol) == candle_time:
+        return
+
+    last_scan[symbol] = candle_time
+
+    print(
+        f"[{symbol}] "
+        f"{signal['signal']} "
+        f"Score={signal.get('score',0)} "
+        f"Confidence={signal.get('confidence',0)}%"
+    )
+
+    if signal["signal"] != "BUY":
+        return
+
+    trader.try_open_position(
+        symbol,
+        signal,
+    )
+
+# ===========================================
+# Position Management
+# ===========================================
 
 def manage_positions():
-    changed = False
 
-    for p in get_positions():
+    if not trader.positions:
+        return
+
+    closed = []
+
+    for symbol in list(trader.positions.keys()):
+
         try:
-            price = get_price(p["symbol"])
+            price = get_price(symbol)
 
-            if price <= p["stop"]:
-                result = paper_sell(p["symbol"], price, "STOP")
-                if result:
-                    changed = True
-                    print(
-                        f"🔴 STOP {p['symbol']} | "
-                        f"Exit={result[0]:.6f} "
-                        f"P/L={result[1]:+.4f}"
-                    )
+            result = trader.update_position(
+                symbol,
+                price,
+            )
 
-            elif price >= p["target"]:
-                result = paper_sell(p["symbol"], price, "TARGET")
-                if result:
-                    changed = True
-                    print(
-                        f"🟢 TARGET {p['symbol']} | "
-                        f"Exit={result[0]:.6f} "
-                        f"P/L={result[1]:+.4f}"
-                    )
+            if result:
+
+                print(
+                    f"[CLOSE] {symbol} "
+                    f"{result['reason']} "
+                    f"PnL={result['pnl']:.2f} USDT"
+                )
+
+                closed.append(symbol)
 
         except Exception as e:
-            print("❌ Position error:", p["symbol"], e)
+            print(f"[POSITION ERROR] {symbol}: {e}")
 
-    return changed
+    return closed
 
 
-def scan():
+# ===========================================
+# Scan Market
+# ===========================================
 
-    date_prefix = now().date().isoformat()
-
-    daily = today_pnl(date_prefix)
-
-    if daily <= -(START_BALANCE * DAILY_LOSS_LIMIT_PCT):
-        print("⛔ Daily loss limit reached.")
-        return False
-
-    trade_opened = False
+def scan_market():
 
     for symbol in SYMBOLS:
 
-        if len(get_positions()) >= MAX_OPEN_POSITIONS:
-            break
-
-        if get_position(symbol):
-            continue
-
         try:
-
-            df = get_candles(symbol)
-
-            candle_time = df.iloc[-2]["open_time"].isoformat()
-
-            if last_scan_candle.get(symbol) == candle_time:
-                continue
-
-            last_scan_candle[symbol] = candle_time
-
-            a = analyze(df)
-
-            if a["signal"] != "BUY":
-                print(f"{symbol} -> WAIT ({a.get('score',0)}/5)")
-                continue
-
-            if signal_seen(symbol, candle_time):
-                continue
-
-            save_signal(
-                symbol,
-                candle_time,
-                a["score"],
-                a["rsi"],
-                now().isoformat(),
-            )
-
-            price = get_price(symbol)
-
-            trade = paper_buy(symbol, price, a["atr"])
-
-            if trade:
-
-                trade_opened = True
-
-                entry, qty, stop, target = trade
-
-                print("=" * 60)
-                print(f"🟢 PAPER BUY {symbol}")
-                print(f"Entry : {entry:.6f}")
-                print(f"Qty   : {qty:.8f}")
-                print(f"Stop  : {stop:.6f}")
-                print(f"Target: {target:.6f}")
-                print(f"Score : {a['score']}/5")
-                print(f"RSI   : {a['rsi']:.1f}")
-                print("=" * 60)
+            scan_symbol(symbol)
 
         except Exception as e:
-            print("❌ Scan error:", symbol, e)
 
-    return trade_opened
+            print(f"[SCAN ERROR] {symbol}")
+
+            print(e)
 
 
-def main():
+# ===========================================
+# Reports
+# ===========================================
+
+last_report = time.time()
+
+REPORT_INTERVAL = 60 * 30
+
+
+def maybe_report():
 
     global last_report
 
-    init_db()
+    now = time.time()
 
-    print("=" * 50)
-    print("TRADING BOT V1.1")
-    print("PAPER MODE ONLY")
-    print("Start balance: 50 USDT")
-    print("=" * 50)
+    if now - last_report < REPORT_INTERVAL:
+        return
 
-    print_report()
+    print()
+
+    print_report(trader)
+
+    print()
+
+    last_report = now
+
+# ===========================================
+# Main Loop
+# ===========================================
+
+def main():
+
+    print()
+    print("Bot is running...")
+    print()
 
     while True:
 
-        position_changed = manage_positions()
+        try:
 
-        trade_opened = scan()
+            # 1. Manage open positions
+            manage_positions()
 
-        current_time = now()
+            # 2. Scan all markets
+            scan_market()
 
-        if (
-            last_report is None
-            or (current_time - last_report).total_seconds() >= 1800
-            or trade_opened
-            or position_changed
-        ):
-            print_report()
-            last_report = current_time
+            # 3. Print statistics
+            maybe_report()
 
-        time.sleep(SCAN_SECONDS)
+            # 4. Wait until next scan
+            time.sleep(SCAN_SECONDS)
 
+        except KeyboardInterrupt:
+
+            print()
+            print("Bot stopped.")
+            break
+
+        except Exception:
+
+            print()
+            print("=" * 60)
+            print("MAIN LOOP ERROR")
+            traceback.print_exc()
+            print("=" * 60)
+            print()
+
+            time.sleep(10)
+
+
+# ===========================================
+# Start
+# ===========================================
 
 if __name__ == "__main__":
+
     main()
