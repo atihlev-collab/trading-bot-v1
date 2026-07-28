@@ -68,6 +68,9 @@ def scan_symbol(symbol):
     if signal["signal"] != "BUY":
         return
 
+    if trader.has_position(symbol):
+        return
+
     trader.try_open_position(
         symbol,
         signal,
