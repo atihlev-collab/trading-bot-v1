@@ -58,31 +58,20 @@ def scan_symbol(symbol):
 
     last_scan[symbol] = candle_time
 
-     if signal["signal"] != "BUY":
-        return
-         
-    if trader.has_position(symbol):
-        return
-
-    print(
-        f"[{symbol}] "
-        f"{signal['signal']} "
-        f"Score={signal.get('score',0)} "
-        f"Confidence={signal.get('confidence',0)}%"
-    )
-
-    trader.try_open_position(symbol, signal)
-
     if signal["signal"] != "BUY":
         return
 
     if trader.has_position(symbol):
         return
 
-    trader.try_open_position(
-        symbol,
-        signal,
+    print(
+        f"[{symbol}] "
+        f"{signal['signal']} "
+        f"Score={signal.get('score', 0)} "
+        f"Confidence={signal.get('confidence', 0)}%"
     )
+
+    trader.try_open_position(symbol, signal)
 
 # ===========================================
 # Position Management
