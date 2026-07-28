@@ -33,8 +33,7 @@ class PaperTrader:
         self.load_positions()
 
     def load_positions(self):
-
-        self.positions = {}
+        self.refresh_positions()    
 
     def has_position(self, symbol):
 
@@ -206,3 +205,30 @@ class PaperTrader:
             }
 
         return None
+
+    def refresh_positions(self):
+        """
+        Synchronize in-memory positions with the database.
+        """
+
+        from database import get_positions
+
+        db_positions = get_positions()
+
+        self.positions = {}
+
+        for p in db_positions:
+
+            self.positions[p["symbol"]] = {
+                "entry": p["entry"],
+                "qty": p["qty"],
+                "stop": p["stop"],
+                "target": p["target"],
+                "atr": max(
+                    (p["target"] - p["entry"]) /
+                    REWARD_RISK /
+                    ATR_STOP_MULT,
+                    0.0000001,
+                ),
+                "break_even": False,
+            }
