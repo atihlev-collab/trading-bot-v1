@@ -72,11 +72,11 @@ def scan_symbol(symbol):
         return None
 
     if symbol in cooldown:
-    if time.time() - cooldown[symbol] < COOLDOWN_SECONDS:
-        return
+        if time.time() - cooldown[symbol] < COOLDOWN_SECONDS:
+            return
 
     signal["symbol"] = symbol
-    return signal
+        return signal
 
 # ===========================================
 # Position Management
