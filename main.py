@@ -82,7 +82,7 @@ def scan_symbol(symbol):
 # Position Management
 # ===========================================
 
-def manage_positions():   
+def manage_positions():
 
     if not trader.positions:
         return
@@ -101,16 +101,16 @@ def manage_positions():
 
             if result:
 
-    print(
-        f"[CLOSE] {symbol} "
-        f"{result['reason']} "
-        f"PnL={result['pnl']:.2f} USDT"
-    )
+                print(
+                    f"[CLOSE] {symbol} "
+                    f"{result['reason']} "
+                    f"PnL={result['pnl']:.2f} USDT"
+                )
 
-    if result["pnl"] < 0:
-        cooldown[symbol] = time.time()
+                if result["pnl"] < 0:
+                    cooldown[symbol] = time.time()
 
-    closed.append(symbol)
+                closed.append(symbol)
 
         except Exception as e:
             print(f"[POSITION ERROR] {symbol}: {e}")
