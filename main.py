@@ -99,7 +99,7 @@ def manage_positions():
                 price,
             )
 
-           if result:
+            if result:
 
     print(
         f"[CLOSE] {symbol} "
