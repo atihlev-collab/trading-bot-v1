@@ -60,7 +60,7 @@ def scan_symbol(symbol):
     last_scan[symbol] = candle_time
 
     if signal["signal"] != "BUY":
-    return
+        return
     
     if signal["confidence"] < 75:
         return
