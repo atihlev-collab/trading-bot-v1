@@ -5,6 +5,7 @@ from datetime import datetime
 from config import (
     SYMBOLS,
     SCAN_SECONDS,
+    MAX_OPEN_POSITIONS,
 )
 
 from market_data import (
@@ -59,8 +60,11 @@ def scan_symbol(symbol):
     last_scan[symbol] = candle_time
 
     if signal["signal"] != "BUY":
+    return
+    
+    if signal["confidence"] < 75:
         return
-
+    
     if trader.has_position(symbol):
         return
 
@@ -115,6 +119,9 @@ def manage_positions():
 # ===========================================
 
 def scan_market():
+    
+    if len(trader.positions) >= MAX_OPEN_POSITIONS:
+        return
 
     for symbol in SYMBOLS:
 
