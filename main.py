@@ -76,7 +76,7 @@ def scan_symbol(symbol):
             return
 
     signal["symbol"] = symbol
-        return signal
+    return signal
 
 # ===========================================
 # Position Management
