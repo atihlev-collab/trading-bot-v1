@@ -78,7 +78,7 @@ def analyze(df):
 
     volume_ok = (
         row["volume"] >=
-        row["vol_ma"] * 1.30
+        row["vol_ma"] * 1.15
     )
 
     momentum_ok = row["momentum"] > 0.003
@@ -176,7 +176,7 @@ def analyze(df):
     MAX_SCORE = 17
     confidence = round((score / MAX_SCORE) * 100, 1)
     
-    if score >= 13:
+    if score >= 12:
         signal = "BUY"
     elif score >= 10:
         signal = "WATCH"
