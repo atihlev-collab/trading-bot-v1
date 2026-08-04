@@ -80,7 +80,22 @@ def scan_market():
 
             signals.append(signal)
 
-    return rank_signals(signals)
+    signals = rank_signals(signals)
+
+    print("=" * 60)
+    print(f"TOTAL SIGNALS: {len(signals)}")
+    
+    for s in signals:
+        print(
+            s["symbol"],
+            s["signal"],
+            s["score"],
+            s["confidence"]
+        )
+    
+    print("=" * 60)
+    
+    return signals
 
 
 # ==========================================
