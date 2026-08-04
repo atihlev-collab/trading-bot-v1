@@ -140,11 +140,11 @@ class PaperTrader:
 
         value = quantity * entry
 
-        if value > self.balance:
+        if value > self.balance + 0.01:
             print(
                 f"[SKIP] {symbol} "
-                f"value={value:.2f} "
-                f"balance={self.balance:.2f}"
+                f"value={value:.8f} "
+                f"balance={self.balance:.8f}"
             )
             return False
 
