@@ -137,11 +137,7 @@ def scan():
 
     if trader.free_slots() <= 0:
         return
-
-    signals = scan_market()
-
-    if not signals:
-        return
+   
 
     for trade_signal in signals:
 
