@@ -1,7 +1,9 @@
 import time
 import traceback
 
-from config import *
+import os
+print(os.listdir("/app"))
+raise SystemExit
 
 from scanner import scan_market
 
