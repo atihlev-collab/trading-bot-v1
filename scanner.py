@@ -28,36 +28,30 @@ engine = StrategyEngine()
 # Scan One Symbol
 # ==========================================
 
+from logger import info
+
 def scan_symbol(symbol):
 
     try:
 
-        df15 = get_candles(
-            symbol,
-            LOWER_TIMEFRAME,
-        )
+        info(f"{symbol} -> 15m")
+        df15 = get_candles(symbol, LOWER_TIMEFRAME)
 
-        df1h = get_candles(
-            symbol,
-            HIGHER_TIMEFRAME,
-        )
+        info(f"{symbol} -> 1h")
+        df1h = get_candles(symbol, HIGHER_TIMEFRAME)
 
-        df4h = get_candles(
-            symbol,
-            "4h",
-        )
+        info(f"{symbol} -> 4h")
+        df4h = get_candles(symbol, "4h")
 
+        info(f"{symbol} -> analyze")
         signal = engine.analyze(
-
             symbol,
-
             df15,
-
             df1h,
-
             df4h,
-
         )
+
+        info(f"{symbol} -> analyzed")
 
         if signal["signal"] == "WAIT":
             return None
@@ -67,7 +61,6 @@ def scan_symbol(symbol):
     except Exception as e:
 
         print(f"[SCAN ERROR] {symbol}: {e}")
-
         return None
 
 
