@@ -146,7 +146,7 @@ class PaperTrader:
                 f"value={value:.2f} "
                 f"balance={self.balance:.2f}"
             )
-           return False
+            return False
 
         self.balance -= value
 
