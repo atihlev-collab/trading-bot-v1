@@ -162,12 +162,14 @@ def scan():
         if trade_signal["confidence"] < BUY_SCORE:
             continue
 
+        print(f"[TRY OPEN] {symbol}")
+
         opened = trader.try_open_position(
             symbol,
             trade_signal,
         )
    	
-
+        print(f"[OPEN RESULT] {opened}")
         
         if opened:
 
