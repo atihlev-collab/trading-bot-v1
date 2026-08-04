@@ -218,7 +218,7 @@ def main():
             report()
 
             # 4
-           time.sleep(config.SCAN_SECONDS)
+            time.sleep(config.SCAN_SECONDS)
 
         except KeyboardInterrupt:
 
