@@ -48,6 +48,8 @@ def get_candles(
     limit=CANDLE_LIMIT,
 ):
 
+    print(f"[DOWNLOAD] {symbol} {interval}")
+    
     url = f"{BASE_URL}/api/v3/klines"
 
     data = request_json(
@@ -59,6 +61,11 @@ def get_candles(
         },
     )
 
+    print(f"[RESPONSE] {symbol} {interval} -> {len(data)} candles")
+
+    if not data:
+        raise Exception(f"No data for {symbol} {interval}")
+    
     df = pd.DataFrame(
         data,
         columns=[
@@ -76,6 +83,8 @@ def get_candles(
             "ignore",
         ],
     )
+
+    print(f"[DATAFRAME] {symbol} {interval}")
 
     df["open_time"] = pd.to_datetime(
         df["open_time"],
@@ -98,6 +107,8 @@ def get_candles(
     for col in numeric:
         df[col] = df[col].astype(float)
 
+    print(f"[READY] {symbol} {interval}")
+    
     return df
 
 
