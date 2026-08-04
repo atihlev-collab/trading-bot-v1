@@ -1,9 +1,13 @@
+import config
+
+print("CONFIG OK")
+print(config.START_BALANCE)
+
+raise SystemExit
+
 import time
 import traceback
 
-import os
-print(os.listdir("/app"))
-raise SystemExit
 
 from scanner import scan_market
 
