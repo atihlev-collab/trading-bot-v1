@@ -282,6 +282,12 @@ class StrategyEngine:
             quality = "C"
             signal = "WAIT"
 
+        print(
+            f"[RESULT] {symbol} "
+            f"score={score} "
+            f"signal={signal}"
+        )
+        
         return {
 
             "symbol": symbol,
