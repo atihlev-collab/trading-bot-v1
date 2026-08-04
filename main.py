@@ -128,11 +128,11 @@ def scan():
         return
 
     info("Calling scan_market()")
-    print("BEFORE scan_market")
+    
 
     signals = scan_market()
 
-    print("AFTER scan_market", len(signals))
+    
 
     info(f"scan_market returned {len(signals)} signals")
 
