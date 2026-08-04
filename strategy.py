@@ -32,7 +32,7 @@ class StrategyEngine:
         h4 = df4h.copy()
 
         # ==========================
-        # 15m Indicators
+        # Indicators
         # ==========================
 
         for df in (m15, h1, h4):
@@ -107,25 +107,31 @@ class StrategyEngine:
         )
 
         if trend15:
-            score += 15
+            score += 12
         else:
             reasons.append("15M_TREND")
 
         if trend1h:
-            score += 20
+            score += 16
         else:
             reasons.append("1H_TREND")
 
         if trend4h:
-            score += 25
+            score += 20
         else:
             reasons.append("4H_TREND")
+
+        if trend15 and trend1h:
+            score += 5
+
+        if trend15 and trend1h and trend4h:
+            score += 8
 
         # ==========================================
         # RSI
         # ==========================================
 
-        if 50 <= row15["rsi"] <= 65:
+        if RSI_MIN <= row15["rsi"] <= RSI_MAX:
             score += 8
         else:
             reasons.append("RSI")
@@ -144,10 +150,8 @@ class StrategyEngine:
         # ==========================================
 
         if (
-            row15["volume"]
-            >
-            row15["volume_ma"] *
-            VOLUME_MULTIPLIER
+            row15["volume"] >
+            row15["volume_ma"] * VOLUME_MULTIPLIER
         ):
             score += 10
         else:
@@ -158,10 +162,8 @@ class StrategyEngine:
         # ==========================================
 
         if (
-            MIN_ATR_PERCENT
-            <=
-            row15["atr_pct"]
-            <=
+            MIN_ATR_PERCENT <=
+            row15["atr_pct"] <=
             MAX_ATR_PERCENT
         ):
             score += 6
@@ -173,8 +175,7 @@ class StrategyEngine:
         # ==========================================
 
         if (
-            row15["trend_strength"]
-            >
+            row15["trend_strength"] >
             MIN_TREND_STRENGTH
         ):
             score += 8
@@ -186,21 +187,27 @@ class StrategyEngine:
         # ==========================================
 
         if (
-            row15["macd"]
-            >
+            row15["macd"] >
             row15["macd_signal"]
         ):
             score += 8
         else:
             reasons.append("MACD")
 
+        if (
+            row15["macd"] >
+            row15["macd_signal"]
+            and
+            row15["momentum"] > MIN_MOMENTUM
+        ):
+            score += 4
+
         # ==========================================
         # VWAP
         # ==========================================
 
         if (
-            row15["close"]
-            >
+            row15["close"] >
             row15["vwap"]
         ):
             score += 6
@@ -212,8 +219,7 @@ class StrategyEngine:
         # ==========================================
 
         if (
-            row15["close"]
-            <
+            row15["close"] <
             row15["bb_upper"]
         ):
             score += 4
@@ -243,20 +249,32 @@ class StrategyEngine:
             reasons.append("BIG_GREEN")
 
         # ==========================================
-        # QUALITY
+        # EXTRA BONUS
         # ==========================================
+
+        if (
+            trend15
+            and trend1h
+            and row15["macd"] > row15["macd_signal"]
+            and row15["close"] > row15["vwap"]
+        ):
+            score += 5
 
         confidence = round(score, 1)
 
-        if confidence >= 90:
+        # ==========================================
+        # QUALITY
+        # ==========================================
+
+        if confidence >= BUY_SCORE:
             quality = "A+"
             signal = "BUY"
 
-        elif confidence >= 80:
+        elif confidence >= WATCH_SCORE:
             quality = "A"
             signal = "WATCH"
 
-        elif confidence >= 70:
+        elif confidence >= IGNORE_SCORE:
             quality = "B"
             signal = "WATCH"
 
@@ -272,9 +290,11 @@ class StrategyEngine:
 
             "quality": quality,
 
-            "score": score,
+            "score": int(score),
 
-            "confidence": confidence,
+            "confidence": float(confidence),
+
+            "rank": 0,
 
             "trend_strength": float(
                 row15["trend_strength"]
@@ -315,4 +335,3 @@ class StrategyEngine:
             ].isoformat(),
 
         }
-
