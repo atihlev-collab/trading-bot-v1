@@ -121,6 +121,20 @@ def manage_positions():
 
 def scan():
 
+    nfo(">>> ENTER SCAN")
+
+    if trader.free_slots() <= 0:
+        info("No free slots")
+        return
+
+    info("Calling scan_market()")
+    signals = scan_market()
+
+    info(f"scan_market returned {len(signals)} signals")
+
+    if not signals:
+        return
+
     if trader.free_slots() <= 0:
         return
 
