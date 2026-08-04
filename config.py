@@ -10,43 +10,7 @@ START_BALANCE = 50.0
 # ==========================================
 
 SYMBOLS = [
-
-    "BTCUSDT",
-    "ETHUSDT",
     "BNBUSDT",
-    "SOLUSDT",
-    "XRPUSDT",
-
-    "DOGEUSDT",
-    "ADAUSDT",
-    "LINKUSDT",
-    "AVAXUSDT",
-    "DOTUSDT",
-
-    "TRXUSDT",
-    "TONUSDT",
-    "LTCUSDT",
-    "BCHUSDT",
-    "ATOMUSDT",
-
-    "UNIUSDT",
-    "AAVEUSDT",
-    "NEARUSDT",
-    "APTUSDT",
-    "ARBUSDT",
-
-    "OPUSDT",
-    "INJUSDT",
-    "SUIUSDT",
-    "SEIUSDT",
-    "HBARUSDT",
-
-    "FILUSDT",
-    "ETCUSDT",
-    "ALGOUSDT",
-    "VETUSDT",
-    "ICPUSDT",
-
 ]
 
 # ==========================================
