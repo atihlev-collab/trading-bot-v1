@@ -285,7 +285,8 @@ class StrategyEngine:
         print(
             f"[RESULT] {symbol} "
             f"score={score} "
-            f"signal={signal}"
+            f"signal={signal} "
+            f"reasons={reasons}"
         )
         
         return {
