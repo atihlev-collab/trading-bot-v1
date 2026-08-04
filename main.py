@@ -1,12 +1,7 @@
-import config
-
-print("CONFIG OK")
-print(config.START_BALANCE)
-
-raise SystemExit
-
 import time
 import traceback
+
+import config
 
 
 from scanner import scan_market
@@ -223,7 +218,7 @@ def main():
             report()
 
             # 4
-            time.sleep(SCAN_SECONDS)
+           time.sleep(config.SCAN_SECONDS)
 
         except KeyboardInterrupt:
 
