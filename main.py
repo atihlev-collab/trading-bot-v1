@@ -206,6 +206,22 @@ def main():
 
     while True:
 
+        info("=== LOOP START ===")
+    
+        try:
+    
+            info("manage_positions")
+            manage_positions()
+    
+            info("scan")
+            scan()
+    
+            info("report")
+            report()
+    
+            info("sleep")
+            time.sleep(config.SCAN_SECONDS)
+
         try:
 
             # 1
