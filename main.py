@@ -2,7 +2,7 @@ import time
 import traceback
 
 import config
-
+from config import BUY_SCORE
 
 from scanner import scan_market
 
@@ -163,7 +163,7 @@ def scan():
         if trade_signal["signal"] != "BUY":
             continue
 
-        if trade_signal["confidence"] < 85:
+        if trade_signal["confidence"] < BUY_SCORE:
             continue
 
         opened = trader.try_open_position(
