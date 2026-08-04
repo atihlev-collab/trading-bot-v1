@@ -281,20 +281,7 @@ class StrategyEngine:
         else:
             quality = "C"
             signal = "WAIT"
-
-        print(
-            f"[RESULT] {symbol} "
-            f"score={score} "
-            f"signal={signal} "
-            f"reasons={reasons}"
-        )
-
-        print(
-            f"[FINAL] {symbol} "
-            f"score={score} "
-            f"confidence={confidence} "
-            f"signal={signal}"
-        )
+             
         
         return {
 
