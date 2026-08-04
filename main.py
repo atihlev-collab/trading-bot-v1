@@ -202,7 +202,7 @@ def report():
 
 def main():
 
-    info("Bot is running...")
+    info("BOT VERSION 2 - TEST")
 
     while True:
 
