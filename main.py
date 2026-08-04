@@ -220,21 +220,7 @@ def main():
             report()
     
             info("sleep")
-            time.sleep(config.SCAN_SECONDS)
-
-        try:
-
-            # 1
-            manage_positions()
-
-            # 2
-            scan()
-
-            # 3
-            report()
-
-            # 4
-            time.sleep(config.SCAN_SECONDS)
+            time.sleep(config.SCAN_SECONDS)     
 
         except KeyboardInterrupt:
 
