@@ -149,7 +149,7 @@ class PaperTrader:
 
         ср, 29.07 в 15:33
 Това какво значи
-780a8d2a-3c51-4c4d-b9fd-1e51d1880331.py
+
 Python
 ad50706e-2641-408f-80bc-c2afb1ed3a1e.py
 Python
