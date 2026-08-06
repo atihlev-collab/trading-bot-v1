@@ -226,8 +226,15 @@ def main():
     
         try:
     
-            info("manage_positions")
-            manage_positions()
+        info("manage_positions")
+        manage_positions()
+
+        print("===================================")
+        print("BALANCE :", trader.balance)
+        print("OPEN_PNL:", trader.open_pnl)
+        print("EQUITY  :", trader.equity())
+        print("POSITIONS:", trader.positions)
+        print("===================================")
     
             info("scan")
             scan()
