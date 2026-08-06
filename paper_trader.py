@@ -92,6 +92,12 @@ class PaperTrader:
         value = quantity * entry
 
         if value > self.balance:
+            value = self.balance
+            quantity = value / entry
+
+        self.balance -= value
+
+        if value > self.balance:
 
             value = self.balance
 
