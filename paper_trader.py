@@ -2,6 +2,7 @@ from config import START_BALANCE
 
 from datetime import datetime
 
+from market_data import get_price
 
 class PaperTrader:
 
@@ -298,10 +299,12 @@ class PaperTrader:
 
         self.open_pnl = 0
 
-        for p in self.positions.values():
+        for sym, p in self.positions.items():
+
+            current_price = get_price(sym)
 
             self.open_pnl += (
-                (price - p["entry"])
+                (current_price - p["entry"])
                 * p["quantity"]
             )
 
