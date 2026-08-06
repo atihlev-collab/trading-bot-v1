@@ -107,17 +107,17 @@ class StrategyEngine:
         )
 
         if trend15:
-            score += 12
+            score += 15
         else:
             reasons.append("15M_TREND")
 
         if trend1h:
-            score += 16
+            score += 20
         else:
             reasons.append("1H_TREND")
 
         if trend4h:
-            score += 20
+            score += 25
         else:
             reasons.append("4H_TREND")
 
@@ -132,7 +132,7 @@ class StrategyEngine:
         # ==========================================
 
         if RSI_MIN <= row15["rsi"] <= RSI_MAX:
-            score += 8
+            score += 10
         else:
             reasons.append("RSI")
 
@@ -141,7 +141,7 @@ class StrategyEngine:
         # ==========================================
 
         if row15["momentum"] > MIN_MOMENTUM:
-            score += 8
+            score += 10
         else:
             reasons.append("MOMENTUM")
 
@@ -166,7 +166,7 @@ class StrategyEngine:
             row15["atr_pct"] <=
             MAX_ATR_PERCENT
         ):
-            score += 6
+            score += 8
         else:
             reasons.append("ATR")
 
@@ -178,7 +178,7 @@ class StrategyEngine:
             row15["trend_strength"] >
             MIN_TREND_STRENGTH
         ):
-            score += 8
+            score += 10
         else:
             reasons.append("WEAK_TREND")
 
@@ -190,7 +190,7 @@ class StrategyEngine:
             row15["macd"] >
             row15["macd_signal"]
         ):
-            score += 8
+            score += 10
         else:
             reasons.append("MACD")
 
@@ -210,7 +210,7 @@ class StrategyEngine:
             row15["close"] >
             row15["vwap"]
         ):
-            score += 6
+            score += 8
         else:
             reasons.append("VWAP")
 
