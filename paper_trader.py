@@ -1,8 +1,7 @@
 from config import START_BALANCE
-
 from datetime import datetime
-
 from market_data import get_price
+
 
 class PaperTrader:
 
@@ -211,6 +210,7 @@ class PaperTrader:
         pos = self.positions[symbol]
 
         # Update highest price
+
         if price > pos["highest"]:
             pos["highest"] = price
 
@@ -225,9 +225,12 @@ class PaperTrader:
         ):
 
             pos["stop"] = pos["entry"]
+
             pos["break_even"] = True
 
-            print(f"[BE] {symbol} -> Stop moved to Break Even")
+            print(
+                f"[BE] {symbol}"
+            )
 
         # --------------------------
         # Trailing Stop
@@ -236,6 +239,7 @@ class PaperTrader:
         trail = pos["highest"] * 0.985
 
         if trail > pos["stop"]:
+
             pos["stop"] = trail
 
         # --------------------------
@@ -293,11 +297,10 @@ class PaperTrader:
             )
 
         # --------------------------
-        # Open PnL
+        # Open P/L
         # --------------------------
 
-
-        self.open_pnl = 0
+        self.open_pnl = 0.0
 
         for sym, p in self.positions.items():
 
@@ -310,7 +313,7 @@ class PaperTrader:
 
         return None
 
-    # ==========================================
+                 # ==========================================
     # CLOSE POSITION
     # ==========================================
 
@@ -341,9 +344,20 @@ class PaperTrader:
         else:
             self.losses += 1
 
-        self.open_pnl = 0
+        # Recalculate Open P/L
 
-        return {
+        self.open_pnl = 0.0
+
+        for sym, p in self.positions.items():
+
+            current_price = get_price(sym)
+
+            self.open_pnl += (
+                (current_price - p["entry"])
+                * p["quantity"]
+            )
+
+        trade = {
 
             "symbol": symbol,
 
@@ -358,6 +372,10 @@ class PaperTrader:
             "pnl": pnl,
 
         }
+
+        self.closed_trades.append(trade)
+
+        return trade
 
     # ==========================================
     # WIN RATE
@@ -381,18 +399,27 @@ class PaperTrader:
 
     def profit_factor(self):
 
-        profit = 0.0
-        loss = 0.0
+        profits = sum(
+            t["pnl"]
+            for t in self.closed_trades
+            if t["pnl"] > 0
+        )
 
-        # Ако по-късно пазим история на сделките,
-        # тук ще се смята реалният Profit Factor.
-        # Засега връщаме базова стойност.
+        losses = abs(sum(
+            t["pnl"]
+            for t in self.closed_trades
+            if t["pnl"] < 0
+        ))
 
-        if loss == 0:
+        if losses == 0:
+
+            if profits > 0:
+                return 999.0
+
             return 0.0
 
         return round(
-            profit / abs(loss),
+            profits / losses,
             2,
         )
 
@@ -404,15 +431,29 @@ class PaperTrader:
 
         return {
 
-            "balance": self.balance,
+            "balance": round(
+                self.balance,
+                2,
+            ),
 
-            "equity": self.equity(),
+            "equity": round(
+                self.equity(),
+                2,
+            ),
 
-            "realized": self.realized_pnl,
+            "realized": round(
+                self.realized_pnl,
+                2,
+            ),
 
-            "open_pnl": self.open_pnl,
+            "open_pnl": round(
+                self.open_pnl,
+                2,
+            ),
 
-            "positions": len(self.positions),
+            "positions": len(
+                self.positions
+            ),
 
             "trades": self.total_trades,
 
@@ -424,7 +465,5 @@ class PaperTrader:
 
             "profit_factor": self.profit_factor(),
 
-        }
-
-                
+        }   
             
