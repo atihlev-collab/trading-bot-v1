@@ -295,6 +295,7 @@ class PaperTrader:
         # Open PnL
         # --------------------------
 
+
         self.open_pnl = 0
 
         for p in self.positions.values():
