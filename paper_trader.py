@@ -425,3 +425,239 @@ class PaperTrader:
             "profit_factor": self.profit_factor(),
 
         }
+
+    # ==========================================
+    # UPDATE POSITION
+    # ==========================================
+
+    def update_position(
+        self,
+        symbol,
+        price,
+    ):
+
+        if symbol not in self.positions:
+            return None
+
+        pos = self.positions[symbol]
+
+        if price > pos["highest"]:
+            pos["highest"] = price
+
+        # Break Even
+
+        if (
+            not pos["break_even"]
+            and
+            price >= pos["entry"] + (pos["take"] - pos["entry"]) * 0.30
+        ):
+
+            pos["stop"] = pos["entry"]
+            pos["break_even"] = True
+
+            print(f"[BE] {symbol}")
+
+        # Trailing Stop
+
+        trail = pos["highest"] * 0.985
+
+        if trail > pos["stop"]:
+            pos["stop"] = trail
+
+        # Partial Take Profit
+
+        if (
+            not pos["partial_taken"]
+            and
+            price >= pos["entry"] + (pos["take"] - pos["entry"]) * 0.60
+        ):
+
+            qty = pos["quantity"] / 2
+
+            pnl = (
+                (price - pos["entry"])
+                * qty
+            )
+
+            self.balance += qty * price
+
+            self.realized_pnl += pnl
+
+            pos["quantity"] -= qty
+
+            pos["partial_taken"] = True
+
+            print(
+                f"[PARTIAL] {symbol} "
+                f"PnL={pnl:.2f}"
+            )
+
+        # Stop
+
+        if price <= pos["stop"]:
+
+            return self.close_position(
+                symbol,
+                price,
+                "STOP",
+            )
+
+        # Target
+
+        if price >= pos["take"]:
+
+            return self.close_position(
+                symbol,
+                price,
+                "TARGET",
+            )
+
+        # Recalculate Open P/L
+
+        self.open_pnl = 0.0
+
+        for sym, p in self.positions.items():
+
+            current_price = get_price(sym)
+
+            self.open_pnl += (
+                (current_price - p["entry"])
+                * p["quantity"]
+            )
+
+        return None
+
+
+    # ==========================================
+    # CLOSE POSITION
+    # ==========================================
+
+    def close_position(
+        self,
+        symbol,
+        price,
+        reason,
+    ):
+
+        if symbol not in self.positions:
+            return None
+
+        pos = self.positions.pop(symbol)
+
+        value = price * pos["quantity"]
+
+        pnl = (
+            price - pos["entry"]
+        ) * pos["quantity"]
+
+        self.balance += value
+
+        self.realized_pnl += pnl
+
+        if pnl >= 0:
+            self.wins += 1
+        else:
+            self.losses += 1
+
+        # Recalculate Open P/L
+
+        self.open_pnl = 0.0
+
+        for sym, p in self.positions.items():
+
+            current_price = get_price(sym)
+
+            self.open_pnl += (
+                (current_price - p["entry"])
+                * p["quantity"]
+            )
+
+        self.closed_trades.append({
+
+            "symbol": symbol,
+
+            "reason": reason,
+
+            "entry": pos["entry"],
+
+            "exit": price,
+
+            "quantity": pos["quantity"],
+
+            "pnl": pnl,
+
+        })
+
+        return self.closed_trades[-1]
+
+    # ==========================================
+    # WIN RATE
+    # ==========================================
+
+    def win_rate(self):
+
+        closed = self.wins + self.losses
+
+        if closed == 0:
+            return 0.0
+
+        return round(
+            self.wins / closed * 100,
+            1,
+        )
+
+    # ==========================================
+    # PROFIT FACTOR
+    # ==========================================
+
+    def profit_factor(self):
+
+        profit = sum(
+            t["pnl"]
+            for t in self.closed_trades
+            if t["pnl"] > 0
+        )
+
+        loss = abs(sum(
+            t["pnl"]
+            for t in self.closed_trades
+            if t["pnl"] < 0
+        ))
+
+        if loss == 0:
+            return round(profit, 2)
+
+        return round(
+            profit / loss,
+            2,
+        )
+
+    # ==========================================
+    # STATS
+    # ==========================================
+
+    def stats(self):
+
+        return {
+
+            "balance": round(self.balance, 2),
+
+            "equity": round(self.equity(), 2),
+
+            "realized": round(self.realized_pnl, 2),
+
+            "open_pnl": round(self.open_pnl, 2),
+
+            "positions": len(self.positions),
+
+            "trades": self.total_trades,
+
+            "wins": self.wins,
+
+            "losses": self.losses,
+
+            "win_rate": self.win_rate(),
+
+            "profit_factor": self.profit_factor(),
+
+        }
