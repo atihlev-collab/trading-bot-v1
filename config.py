@@ -113,11 +113,11 @@ MAX_GREEN_CANDLE = 0.015
 # Signal Ranking
 # ==========================================
 
-BUY_SCORE = 75
+BUY_SCORE = 60
 
-WATCH_SCORE = 70
+WATCH_SCORE = 55
 
-IGNORE_SCORE = 60
+IGNORE_SCORE = 50
 
 # ==========================================
 # Risk
