@@ -26,6 +26,10 @@ class PaperTrader:
         self.daily_loss = 0.0
         self.max_daily_loss = 5.0
 
+        self.max_open_positions = 2
+        self.risk_percent = 2.0
+        self.max_position_percent = 40.0
+
     # ==========================================
     # POSITION CHECK
     # ==========================================
@@ -57,23 +61,42 @@ class PaperTrader:
         stop,
     ):
 
-        risk_amount = (
-            self.balance *
-            self.risk_percent /
-            100
-        )
+        if entry <= 0 or stop <= 0:
+            return 0
 
         stop_distance = abs(entry - stop)
 
         if stop_distance <= 0:
             return 0
 
-        quantity = risk_amount / stop_distance
+        # Реален паричен риск
+        risk_amount = (
+            self.balance *
+            self.risk_percent /
+            100
+        )
 
-        value = quantity * entry
+        # Количество според риска
+        quantity = (
+            risk_amount /
+            stop_distance
+        )
 
-        if value > self.balance:
-            quantity = self.balance / entry
+        # Максимална стойност на една позиция
+        max_value = (
+            self.balance *
+            self.max_position_percent /
+            100
+        )
+
+        # Ограничаваме експозицията
+        max_quantity = max_value / entry
+
+        if quantity > max_quantity:
+            quantity = max_quantity
+
+        if quantity <= 0:
+            return 0
 
         return round(quantity, 6)
 
