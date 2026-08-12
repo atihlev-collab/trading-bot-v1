@@ -282,15 +282,15 @@ return round(
 
         
 
-    # ==========================================
-    # OPEN POSITION
-    # ==========================================
+        # ==========================================
+        # OPEN POSITION
+        # ==========================================
 
-    def try_open_position(
-        self,
-        symbol,
-        signal,
-    ):
+            def try_open_position(
+                self,
+                symbol,
+                signal,
+        ):
 
         self._reset_daily_loss()
 
