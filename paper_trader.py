@@ -33,24 +33,22 @@ class PaperTrader:
         # RISK MANAGEMENT
         # ==========================================
 
-        self.max_open_positions = 2
-
         # Risk per trade
-    from config import (
+        from config import (
         RISK_PER_TRADE,
         MAX_POSITION_PCT,
         MAX_OPEN_POSITIONS,
         DAILY_LOSS_LIMIT,
-    )
+        )
 
-    self.risk_percent = RISK_PER_TRADE * 100
-    self.max_position_pct = MAX_POSITION_PCT
-    self.max_open_positions = MAX_OPEN_POSITIONS
+        self.risk_percent = RISK_PER_TRADE * 100
+        self.max_position_pct = MAX_POSITION_PCT
+        self.max_open_positions = MAX_OPEN_POSITIONS
 
-    # Maximum realized loss allowed per day
-    self.max_daily_loss = (
-        self.start_balance * DAILY_LOSS_LIMIT
-    )
+        # Maximum realized loss allowed per day
+        self.max_daily_loss = (
+            self.start_balance * DAILY_LOSS_LIMIT
+        )
         self.daily_loss = 0.0
         self.daily_date = datetime.now(
             timezone.utc
