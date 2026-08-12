@@ -49,7 +49,22 @@ class PaperTrader:
     # ==========================================
 
     def equity(self):
-        return self.balance + self.open_pnl
+
+        position_value = 0.0
+
+        for symbol, pos in self.positions.items():
+
+            current_price = get_price(symbol)
+
+            if current_price is None:
+                current_price = pos["entry"]
+
+            position_value += (
+                current_price *
+                pos["quantity"]
+            )
+
+        return self.balance + position_value
 
     # ==========================================
     # POSITION SIZE
