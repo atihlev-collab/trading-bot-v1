@@ -767,3 +767,47 @@ class PaperTrader:
             profits / losses,
             2,
         )
+
+    # ==========================================
+    # STATS
+    # ==========================================
+
+    def stats(self):
+
+        return {
+
+            "balance": round(
+                self.balance,
+                2,
+            ),
+
+            "equity": round(
+                self.equity(),
+                2,
+            ),
+
+            "realized": round(
+                self.realized_pnl,
+                2,
+            ),
+
+            "open_pnl": round(
+                self.open_pnl,
+                2,
+            ),
+
+            "positions": len(
+                self.positions
+            ),
+
+            "trades": self.total_trades,
+
+            "wins": self.wins,
+
+            "losses": self.losses,
+
+            "win_rate": self.win_rate(),
+
+            "profit_factor": self.profit_factor(),
+
+        }
