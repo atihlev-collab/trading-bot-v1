@@ -1093,6 +1093,12 @@ class PaperTrader:
 
         self.realized_pnl += pnl
 
+        # ==========================================
+        # TOTAL CLOSED TRADES
+        # ==========================================
+
+        self.total_trades += 1
+
 
         # ==========================================
         # WIN / LOSS
