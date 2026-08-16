@@ -1,8 +1,3 @@
-# ==========================================
-# Trading Bot V4
-# Scanner / Signal Engine
-# ==========================================
-
 import math
 
 from config import (
@@ -57,13 +52,6 @@ def _num(value):
     return None
 
 
-def _safe_ratio(value, minimum):
-    if minimum <= 0:
-        return 0.0
-
-    return value / minimum
-
-
 # ==========================================
 # ANALYZE SYMBOL
 # ==========================================
@@ -71,10 +59,6 @@ def _safe_ratio(value, minimum):
 def analyze_symbol(symbol):
 
     try:
-
-        # ==================================
-        # MARKET DATA
-        # ==================================
 
         low = get_candles(
             symbol,
@@ -87,17 +71,10 @@ def analyze_symbol(symbol):
         )
 
         if len(low) < 220 or len(high) < 220:
-
             return None
-
-
-        # ==================================
-        # PRICE SERIES
-        # ==================================
 
         lc = low["close"]
         hc = high["close"]
-
 
         # ==================================
         # EMA
@@ -133,7 +110,6 @@ def analyze_symbol(symbol):
             EMA_TREND,
         )
 
-
         # ==================================
         # INDICATORS
         # ==================================
@@ -158,213 +134,221 @@ def analyze_symbol(symbol):
             VOLUME_PERIOD,
         )
 
-        macd_line, macd_signal, macd_hist = macd(
-            lc
-        )
+        macd_line, macd_signal, macd_hist = macd(lc)
 
         adx_v = adx(
             low,
             14,
         )
 
+        i = -1
 
         # ==================================
         # CURRENT VALUES
         # ==================================
 
-        i = -1
+        price = float(
+            lc.iloc[i]
+        )
 
-        price = _num(lc.iloc[i])
-
-        atr_value = _num(
+        a = _num(
             low_atr.iloc[i]
         )
 
-        rsi_now = _num(
+        r = _num(
             low_rsi.iloc[i]
         )
 
-        momentum_now = _num(
+        mom = _num(
             low_mom.iloc[i]
         )
 
-        trend_now = _num(
+        ts = _num(
             trend_strength(
                 low_fast,
                 low_slow,
             ).iloc[i]
         )
 
-        adx_now = _num(
-            adx_v.iloc[i]
+        adx_now = (
+            _num(adx_v.iloc[i])
+            or 0.0
         )
 
-        macd_hist_now = _num(
-            macd_hist.iloc[i]
+        hist_now = (
+            _num(macd_hist.iloc[i])
+            or 0.0
         )
 
+        volume_now = float(
+            low["volume"].iloc[i]
+        )
 
-        if price is None or price <= 0:
-            return None
-
-        if atr_value is None or atr_value <= 0:
-            return None
-
-        if rsi_now is None:
-            return None
-
-        if momentum_now is None:
-            return None
-
-        if trend_now is None:
-            return None
-
-        if adx_now is None:
-            adx_now = 0.0
-
-        if macd_hist_now is None:
-            macd_hist_now = 0.0
-
+        volume_average = float(
+            vol_ma.iloc[i]
+        )
 
         # ==================================
-        # ATR %
+        # BASIC VALIDATION
         # ==================================
 
-        atr_pct = (
-            atr_value /
-            price
-        )
+        if price <= 0:
+            return None
 
+        if a is None:
+            return None
+
+        if r is None:
+            return None
+
+        if mom is None:
+            return None
+
+        if ts is None:
+            return None
+
+        if volume_average <= 0:
+            return None
+
+        # ==================================
+        # ATR
+        # ==================================
+
+        atr_pct = a / price
+
+        if not (
+            MIN_ATR_PERCENT
+            <= atr_pct
+            <= MAX_ATR_PERCENT
+        ):
+            return None
 
         # ==================================
         # VOLUME
+        #
+        # We want real participation.
         # ==================================
 
-        current_volume = _num(
-            low["volume"].iloc[i]
-        ) or 0.0
-
-        volume_average = _num(
-            vol_ma.iloc[i]
-        ) or 0.0
-
-        if volume_average > 0:
-
-            volume_ratio = (
-                current_volume /
-                volume_average
-            )
-
-        else:
-
-            volume_ratio = 0.0
-
-
-        # ==================================
-        # CANDLE
-        # ==================================
-
-        open_price = _num(
-            low["open"].iloc[i]
+        vol_ratio = (
+            volume_now
+            / volume_average
         )
 
-        close_price = _num(
-            low["close"].iloc[i]
-        )
-
-        if (
-            open_price is None
-            or open_price <= 0
-            or close_price is None
+        if vol_ratio < max(
+            VOLUME_MULTIPLIER,
+            1.10,
         ):
             return None
 
-        candle_body = abs(
-            close_price -
-            open_price
-        ) / open_price
-
-
         # ==================================
-        # TREND CONDITIONS
-        # ==================================
-
-        high_price = _num(
-            hc.iloc[i]
-        )
-
-        high_trend_value = _num(
-            high_trend.iloc[i]
-        )
-
-        high_fast_value = _num(
-            high_fast.iloc[i]
-        )
-
-        high_slow_value = _num(
-            high_slow.iloc[i]
-        )
-
-        low_fast_value = _num(
-            low_fast.iloc[i]
-        )
-
-        low_slow_value = _num(
-            low_slow.iloc[i]
-        )
-
-        low_trend_value = _num(
-            low_trend.iloc[i]
-        )
-
-
-        if (
-            high_price is None
-            or high_trend_value is None
-            or high_fast_value is None
-            or high_slow_value is None
-            or low_fast_value is None
-            or low_slow_value is None
-            or low_trend_value is None
-        ):
-            return None
-
-
-        # ==================================
-        # HIGHER TIMEFRAME TREND
+        # TREND
         # ==================================
 
         htf_bull = (
-            high_price >
-            high_trend_value
+            hc.iloc[i]
+            > high_trend.iloc[i]
             and
-            high_fast_value >
-            high_slow_value
+            high_fast.iloc[i]
+            > high_slow.iloc[i]
         )
-
-
-        # ==================================
-        # LOWER TIMEFRAME TREND
-        # ==================================
 
         ltf_bull = (
-            price >
-            low_trend_value
+            price
+            > low_trend.iloc[i]
             and
-            low_fast_value >
-            low_slow_value
+            low_fast.iloc[i]
+            > low_slow.iloc[i]
         )
 
-
-        # ==================================
-        # IMPORTANT:
-        # DO NOT TRADE AGAINST HTF TREND
-        # ==================================
-
         if not htf_bull:
-
             return None
 
+        if not ltf_bull:
+            return None
+
+        # ==================================
+        # RSI
+        #
+        # Avoid buying an already exhausted
+        # move.
+        # ==================================
+
+        rsi_min = max(
+            RSI_MIN,
+            52,
+        )
+
+        rsi_max = min(
+            RSI_MAX,
+            65,
+        )
+
+        if not (
+            rsi_min
+            <= r
+            <= rsi_max
+        ):
+            return None
+
+        # ==================================
+        # MOMENTUM
+        # ==================================
+
+        momentum_min = max(
+            MIN_MOMENTUM,
+            0.003,
+        )
+
+        if mom < momentum_min:
+            return None
+
+        # ==================================
+        # TREND STRENGTH
+        # ==================================
+
+        if ts < MIN_TREND_STRENGTH:
+            return None
+
+        # ==================================
+        # MACD
+        # ==================================
+
+        if hist_now <= 0:
+            return None
+
+        # ==================================
+        # ADX
+        # ==================================
+
+        if adx_now < 22:
+            return None
+
+        # ==================================
+        # CURRENT CANDLE
+        # ==================================
+
+        open_price = float(
+            low["open"].iloc[i]
+        )
+
+        if open_price <= 0:
+            return None
+
+        candle_body = (
+            abs(
+                float(
+                    low["close"].iloc[i]
+                    -
+                    low["open"].iloc[i]
+                )
+            )
+            /
+            open_price
+        )
+
+        # Don't buy a huge green candle.
+        if candle_body > MAX_GREEN_CANDLE:
+            return None
 
         # ==================================
         # SCORE
@@ -372,317 +356,126 @@ def analyze_symbol(symbol):
 
         score = 0
 
-
-        # ==================================
-        # 1. HIGHER TIMEFRAME TREND
-        # ==================================
-
+        # HTF trend
         score += 25
 
+        # LTF trend
+        score += 20
 
-        # ==================================
-        # 2. LOWER TIMEFRAME TREND
-        # ==================================
-
-        if ltf_bull:
-
-            score += 20
-
+        # RSI quality
+        if 55 <= r <= 62:
+            score += 15
         else:
+            score += 10
 
-            # Do not immediately reject.
-            # Give the market a chance to recover
-            # if other factors are very strong.
-
-            score += 5
-
-
-        # ==================================
-        # 3. RSI
-        # ==================================
-
-        if RSI_MIN <= rsi_now <= RSI_MAX:
-
+        # Volume
+        if vol_ratio >= 1.50:
             score += 15
 
-        elif (
-            rsi_now >= RSI_MIN - 5
-            and
-            rsi_now <= RSI_MAX + 5
-        ):
+        elif vol_ratio >= 1.25:
+            score += 12
 
+        else:
+            score += 8
+
+        # Momentum
+        if mom >= 0.005:
+            score += 15
+
+        elif mom >= 0.004:
+            score += 12
+
+        else:
+            score += 8
+
+        # ADX
+        if adx_now >= 30:
+            score += 10
+
+        elif adx_now >= 25:
             score += 8
 
         else:
-
-            score += 0
-
-
-        # ==================================
-        # 4. VOLUME
-        # ==================================
-
-        if (
-            volume_ratio >=
-            VOLUME_MULTIPLIER
-        ):
-
-            score += 15
-
-        elif volume_ratio >= 1.0:
-
-            score += 9
-
-        elif volume_ratio >= 0.75:
-
-            score += 4
-
-
-        # ==================================
-        # 5. MOMENTUM
-        # ==================================
-
-        if momentum_now >= 0.004:
-
-            score += 10
-
-        elif momentum_now >= MIN_MOMENTUM:
-
-            score += 7
-
-        elif momentum_now > 0:
-
-            score += 3
-
-
-        # ==================================
-        # 6. ADX
-        # ==================================
-
-        if adx_now >= 25:
-
-            score += 10
-
-        elif adx_now >= 20:
-
-            score += 7
-
-        elif adx_now >= 18:
-
-            score += 4
-
-
-        # ==================================
-        # 7. MACD
-        # ==================================
-
-        if macd_hist_now > 0:
-
             score += 5
 
-
-        # ==================================
-        # ATR FILTER
-        # ==================================
-        #
-        # ATR is important for position sizing.
-        # We still reject extreme volatility.
-        #
-
-        if (
-            atr_pct <
-            MIN_ATR_PERCENT
-        ):
-
-            return None
-
-        if (
-            atr_pct >
-            MAX_ATR_PERCENT
-        ):
-
-            return None
-
-
-        # ==================================
-        # CANDLE PROTECTION
-        # ==================================
-        #
-        # Avoid buying after an extremely
-        # extended candle.
-        #
-
-        if (
-            candle_body >
-            MAX_GREEN_CANDLE
-        ):
-
-            # Do not kill the signal completely.
-            # Only penalize it.
-
-            score -= 10
-
-
-        # ==================================
-        # ADD TREND QUALITY BONUS
-        # ==================================
-
-        if trend_now >= (
-            MIN_TREND_STRENGTH * 1.5
-        ):
-
+        # MACD
+        if hist_now > 0:
             score += 5
 
-
-        # ==================================
-        # ADD STRONG MOMENTUM BONUS
-        # ==================================
-
-        if momentum_now >= 0.008:
-
-            score += 5
-
-
-        # ==================================
-        # ADD STRONG VOLUME BONUS
-        # ==================================
-
-        if volume_ratio >= 1.50:
-
-            score += 5
-
-
-        # ==================================
-        # LIMIT SCORE
-        # ==================================
-
-        score = max(
-            0,
-            min(
-                int(round(score)),
-                100,
-            )
+        score = min(
+            score,
+            100,
         )
-
 
         # ==================================
         # QUALITY
         # ==================================
 
-        if score >= 90:
-
+        if score >= 92:
             quality = "A+"
 
-        elif score >= 85:
-
+        elif score >= 88:
             quality = "A"
 
-        elif score >= 75:
+        elif score >= 85:
+            quality = "B+"
 
+        else:
             quality = "B"
 
-        elif score >= 65:
+        # ==================================
+        # FINAL BUY FILTER
+        #
+        # Only high-quality signals.
+        # ==================================
 
-            quality = "C"
+        minimum_buy_score = max(
+            BUY_SCORE,
+            88,
+        )
+
+        if score < minimum_buy_score:
+            signal_type = "WATCH"
 
         else:
-
-            quality = "D"
-
-
-        # ==================================
-        # CONFIDENCE
-        # ==================================
-
-        confidence = score
-
-
-        # ==================================
-        # SIGNAL
-        # ==================================
-
-        if score >= BUY_SCORE:
-
             signal_type = "BUY"
 
-        elif score >= max(
-            BUY_SCORE - 10,
-            60,
-        ):
-
-            signal_type = "WATCH"
-
-        else:
-
-            signal_type = "WATCH"
-
-
-        # ==================================
-        # FINAL QUALITY PROTECTION
-        # ==================================
-
-        # We don't want a BUY against the
-        # lower timeframe trend unless the
-        # rest of the setup is exceptionally
-        # strong.
-
-        if (
-            signal_type == "BUY"
-            and
-            not ltf_bull
-            and
-            score < 90
-        ):
-
-            signal_type = "WATCH"
-
-
-        # ==================================
-        # RESULT
-        # ==================================
-
-        return {
-
+        result = {
             "symbol": symbol,
-
             "signal": signal_type,
-
             "score": score,
-
-            "confidence": confidence,
-
+            "confidence": score,
             "quality": quality,
-
             "close": price,
-
-            "atr": atr_value,
-
-            "atr_percent": atr_pct,
-
-            "trend_strength": trend_now,
-
-            "momentum": momentum_now,
-
-            "volume": current_volume,
-
+            "atr": a,
+            "trend_strength": ts,
+            "momentum": mom,
+            "volume": volume_now,
             "volume_ma": volume_average,
-
-            "volume_ratio": volume_ratio,
-
-            "rsi": rsi_now,
-
+            "rsi": r,
             "adx": adx_now,
-
-            "macd_hist": macd_hist_now,
-
-            "htf_bull": htf_bull,
-
-            "ltf_bull": ltf_bull,
-
-            "candle_body": candle_body,
-
         }
 
+        # ==================================
+        # DEBUG CANDIDATE
+        # ==================================
+
+        if signal_type == "BUY":
+
+            print(
+                f"[CANDIDATE] "
+                f"{symbol} "
+                f"BUY "
+                f"Score={score} "
+                f"RSI={r:.1f} "
+                f"ADX={adx_now:.1f} "
+                f"MOM={mom:.4f} "
+                f"VOL={vol_ratio:.2f} "
+                f"HTF=True "
+                f"LTF=True"
+            )
+
+        return result
 
     except Exception as exc:
 
@@ -704,10 +497,11 @@ def scan_market():
 
     checked = 0
 
-    buy_count = 0
+    candidates = 0
 
-    watch_count = 0
+    buys = 0
 
+    watches = 0
 
     for symbol in SYMBOLS:
 
@@ -717,73 +511,51 @@ def scan_market():
             symbol
         )
 
-        if not result:
-
+        if result is None:
             continue
 
+        candidates += 1
 
         if result["signal"] == "BUY":
-
-            buy_count += 1
+            buys += 1
 
         else:
-
-            watch_count += 1
-
+            watches += 1
 
         signals.append(result)
 
-
     # ======================================
-    # RANK
+    # SORT
     # ======================================
 
     signals.sort(
-
         key=lambda x: (
             x["score"],
-            x["confidence"],
             x["momentum"],
-            x["volume_ratio"],
+            x["volume"],
         ),
-
         reverse=True,
-
     )
 
+    # ======================================
+    # ONLY BUY SIGNALS GO TO TRADER
+    #
+    # WATCH remains available for debugging,
+    # but will not open a position.
+    # ======================================
 
-    # ======================================
-    # DEBUG
-    # ======================================
+    buy_signals = [
+        x
+        for x in signals
+        if x["signal"] == "BUY"
+    ]
 
     print(
-        f"[SCAN] Checked={checked} "
-        f"Candidates={len(signals)} "
-        f"BUY={buy_count} "
-        f"WATCH={watch_count}"
+        f"[SCAN] "
+        f"Checked={checked} "
+        f"Candidates={candidates} "
+        f"BUY={buys} "
+        f"WATCH={watches}"
     )
 
-
-    # ======================================
-    # SHOW TOP CANDIDATES
-    # ======================================
-
-    for item in signals[:5]:
-
-        print(
-
-            f"[CANDIDATE] "
-            f"{item['symbol']} "
-            f"{item['signal']} "
-            f"Score={item['score']} "
-            f"RSI={item['rsi']:.1f} "
-            f"ADX={item['adx']:.1f} "
-            f"MOM={item['momentum']:.4f} "
-            f"VOL={item['volume_ratio']:.2f} "
-            f"HTF={item['htf_bull']} "
-            f"LTF={item['ltf_bull']}"
-
-        )
-
-
-    return signals
+    return buy_signals
