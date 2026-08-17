@@ -36,7 +36,7 @@ from market_data import get_candles
 
 
 # ==========================================
-# HELPERS
+# SAFE NUMBER
 # ==========================================
 
 def _num(value):
@@ -134,7 +134,9 @@ def analyze_symbol(symbol):
             VOLUME_PERIOD,
         )
 
-        macd_line, macd_signal, macd_hist = macd(lc)
+        macd_line, macd_signal, macd_hist = macd(
+            lc
+        )
 
         adx_v = adx(
             low,
@@ -189,7 +191,7 @@ def analyze_symbol(symbol):
         )
 
         # ==================================
-        # BASIC VALIDATION
+        # VALIDATION
         # ==================================
 
         if price <= 0:
@@ -225,20 +227,13 @@ def analyze_symbol(symbol):
 
         # ==================================
         # VOLUME
-        #
-        # We want real participation.
         # ==================================
 
         vol_ratio = (
             volume_now
-            / volume_average
+            /
+            volume_average
         )
-
-        if vol_ratio < max(
-            VOLUME_MULTIPLIER,
-            1.10,
-        ):
-            return None
 
         # ==================================
         # TREND
@@ -260,71 +255,8 @@ def analyze_symbol(symbol):
             > low_slow.iloc[i]
         )
 
-        if not htf_bull:
-            return None
-
-        if not ltf_bull:
-            return None
-
         # ==================================
-        # RSI
-        #
-        # Avoid buying an already exhausted
-        # move.
-        # ==================================
-
-        rsi_min = max(
-            RSI_MIN,
-            52,
-        )
-
-        rsi_max = min(
-            RSI_MAX,
-            65,
-        )
-
-        if not (
-            rsi_min
-            <= r
-            <= rsi_max
-        ):
-            return None
-
-        # ==================================
-        # MOMENTUM
-        # ==================================
-
-        momentum_min = max(
-            MIN_MOMENTUM,
-            0.003,
-        )
-
-        if mom < momentum_min:
-            return None
-
-        # ==================================
-        # TREND STRENGTH
-        # ==================================
-
-        if ts < MIN_TREND_STRENGTH:
-            return None
-
-        # ==================================
-        # MACD
-        # ==================================
-
-        if hist_now <= 0:
-            return None
-
-        # ==================================
-        # ADX
-        # ==================================
-
-        if adx_now < 22:
-            return None
-
-        # ==================================
-        # CURRENT CANDLE
+        # CANDLE
         # ==================================
 
         open_price = float(
@@ -346,65 +278,135 @@ def analyze_symbol(symbol):
             open_price
         )
 
-        # Don't buy a huge green candle.
-        if candle_body > MAX_GREEN_CANDLE:
-            return None
-
         # ==================================
-        # SCORE
+        # SCORE ENGINE
         # ==================================
 
         score = 0
 
-        # HTF trend
-        score += 25
+        reasons = []
 
-        # LTF trend
-        score += 20
+        # ----------------------------------
+        # HTF TREND
+        # ----------------------------------
 
-        # RSI quality
-        if 55 <= r <= 62:
+        if htf_bull:
+
+            score += 25
+            reasons.append("HTF")
+
+        # ----------------------------------
+        # LTF TREND
+        # ----------------------------------
+
+        if ltf_bull:
+
+            score += 20
+            reasons.append("LTF")
+
+        # ----------------------------------
+        # RSI
+        # ----------------------------------
+
+        if 52 <= r <= 65:
+
             score += 15
-        else:
-            score += 10
+            reasons.append("RSI")
 
-        # Volume
+        elif (
+            RSI_MIN
+            <= r
+            <= RSI_MAX
+        ):
+
+            score += 8
+
+        # ----------------------------------
+        # VOLUME
+        # ----------------------------------
+
         if vol_ratio >= 1.50:
+
             score += 15
+            reasons.append("VOL")
 
-        elif vol_ratio >= 1.25:
-            score += 12
+        elif vol_ratio >= 1.20:
 
-        else:
-            score += 8
+            score += 11
 
-        # Momentum
+        elif vol_ratio >= 1.00:
+
+            score += 6
+
+        # ----------------------------------
+        # MOMENTUM
+        # ----------------------------------
+
         if mom >= 0.005:
+
             score += 15
+            reasons.append("MOM")
 
-        elif mom >= 0.004:
-            score += 12
+        elif mom >= 0.003:
 
-        else:
-            score += 8
+            score += 11
 
+        elif mom >= 0.0015:
+
+            score += 6
+
+        # ----------------------------------
         # ADX
+        # ----------------------------------
+
         if adx_now >= 30:
+
             score += 10
+            reasons.append("ADX")
 
         elif adx_now >= 25:
+
             score += 8
 
-        else:
+        elif adx_now >= 20:
+
             score += 5
 
+        # ----------------------------------
         # MACD
+        # ----------------------------------
+
         if hist_now > 0:
+
+            score += 5
+            reasons.append("MACD")
+
+        # ==================================
+        # CANDLE PENALTY
+        # ==================================
+
+        if candle_body > MAX_GREEN_CANDLE:
+
+            score -= 15
+
+        # ==================================
+        # TREND STRENGTH
+        # ==================================
+
+        if ts >= MIN_TREND_STRENGTH:
+
             score += 5
 
-        score = min(
-            score,
-            100,
+        # ==================================
+        # NORMALIZE
+        # ==================================
+
+        score = max(
+            0,
+            min(
+                score,
+                100,
+            ),
         )
 
         # ==================================
@@ -412,67 +414,138 @@ def analyze_symbol(symbol):
         # ==================================
 
         if score >= 92:
+
             quality = "A+"
 
         elif score >= 88:
+
             quality = "A"
 
-        elif score >= 85:
+        elif score >= 82:
+
             quality = "B+"
 
-        else:
+        elif score >= 75:
+
             quality = "B"
 
+        else:
+
+            quality = "C"
+
         # ==================================
-        # FINAL BUY FILTER
+        # BUY FILTER
         #
-        # Only high-quality signals.
+        # Strong but not impossible.
         # ==================================
 
         minimum_buy_score = max(
+            85,
             BUY_SCORE,
-            88,
         )
 
-        if score < minimum_buy_score:
-            signal_type = "WATCH"
+        # Additional quality protection.
+        #
+        # We don't want a high score based
+        # only on trend while momentum,
+        # volume and ADX are weak.
+        # ==================================
 
-        else:
+        quality_confirmations = 0
+
+        if vol_ratio >= 1.10:
+            quality_confirmations += 1
+
+        if mom >= 0.0025:
+            quality_confirmations += 1
+
+        if adx_now >= 22:
+            quality_confirmations += 1
+
+        if hist_now > 0:
+            quality_confirmations += 1
+
+        if r <= 67:
+            quality_confirmations += 1
+
+        if (
+            score >= minimum_buy_score
+            and
+            htf_bull
+            and
+            ltf_bull
+            and
+            quality_confirmations >= 4
+        ):
+
             signal_type = "BUY"
 
+        else:
+
+            signal_type = "WATCH"
+
+        # ==================================
+        # RESULT
+        # ==================================
+
         result = {
+
             "symbol": symbol,
+
             "signal": signal_type,
+
             "score": score,
+
             "confidence": score,
+
             "quality": quality,
+
             "close": price,
+
             "atr": a,
+
             "trend_strength": ts,
+
             "momentum": mom,
+
             "volume": volume_now,
+
             "volume_ma": volume_average,
+
             "rsi": r,
+
             "adx": adx_now,
+
+            "volume_ratio": vol_ratio,
+
+            "macd_hist": hist_now,
+
+            "htf_bull": htf_bull,
+
+            "ltf_bull": ltf_bull,
+
+            "reasons": reasons,
+
         }
 
         # ==================================
-        # DEBUG CANDIDATE
+        # LOG STRONG CANDIDATES
         # ==================================
 
-        if signal_type == "BUY":
+        if score >= 75:
 
             print(
                 f"[CANDIDATE] "
                 f"{symbol} "
-                f"BUY "
+                f"{signal_type} "
                 f"Score={score} "
                 f"RSI={r:.1f} "
                 f"ADX={adx_now:.1f} "
                 f"MOM={mom:.4f} "
                 f"VOL={vol_ratio:.2f} "
-                f"HTF=True "
-                f"LTF=True"
+                f"HTF={htf_bull} "
+                f"LTF={ltf_bull} "
+                f"CONF={quality_confirmations}/5"
             )
 
         return result
@@ -517,9 +590,11 @@ def scan_market():
         candidates += 1
 
         if result["signal"] == "BUY":
+
             buys += 1
 
         else:
+
             watches += 1
 
         signals.append(result)
@@ -531,17 +606,15 @@ def scan_market():
     signals.sort(
         key=lambda x: (
             x["score"],
+            x["confidence"],
             x["momentum"],
-            x["volume"],
+            x["volume_ratio"],
         ),
         reverse=True,
     )
 
     # ======================================
-    # ONLY BUY SIGNALS GO TO TRADER
-    #
-    # WATCH remains available for debugging,
-    # but will not open a position.
+    # ONLY BUY GOES TO TRADER
     # ======================================
 
     buy_signals = [
@@ -557,5 +630,28 @@ def scan_market():
         f"BUY={buys} "
         f"WATCH={watches}"
     )
+
+    # ======================================
+    # SHOW TOP WATCH
+    #
+    # Useful for tuning without opening
+    # weak trades.
+    # ======================================
+
+    if not buy_signals and signals:
+
+        top = signals[0]
+
+        print(
+            f"[TOP WATCH] "
+            f"{top['symbol']} "
+            f"Score={top['score']} "
+            f"RSI={top['rsi']:.1f} "
+            f"ADX={top['adx']:.1f} "
+            f"MOM={top['momentum']:.4f} "
+            f"VOL={top['volume_ratio']:.2f} "
+            f"HTF={top['htf_bull']} "
+            f"LTF={top['ltf_bull']}"
+        )
 
     return buy_signals
