@@ -35,37 +35,40 @@ from indicators import (
 from market_data import get_candles
 
 
-# ==========================================================
+# ============================================================
 # SAFE NUMBER
-# ==========================================================
+# ============================================================
 
 def _num(value):
     try:
         value = float(value)
+
         if math.isfinite(value):
             return value
+
         return None
+
     except Exception:
         return None
 
 
-# ==========================================================
+# ============================================================
 # ANALYZE SYMBOL
-# ==========================================================
+# ============================================================
 
 def analyze_symbol(symbol):
 
     try:
 
-        low = get_candles(
-            symbol,
-            LOWER_TIMEFRAME
-        )
+        # ----------------------------------------------------
+        # LOAD DATA
+        # ----------------------------------------------------
 
-        high = get_candles(
-            symbol,
-            HIGHER_TIMEFRAME
-        )
+        low = get_candles(symbol, LOWER_TIMEFRAME)
+        high = get_candles(symbol, HIGHER_TIMEFRAME)
+
+        if low is None or high is None:
+            return None
 
         if len(low) < 220 or len(high) < 220:
             return None
@@ -73,9 +76,9 @@ def analyze_symbol(symbol):
         lc = low["close"]
         hc = high["close"]
 
-        # ==================================================
+        # ----------------------------------------------------
         # EMAs
-        # ==================================================
+        # ----------------------------------------------------
 
         low_fast = ema(lc, EMA_FAST)
         low_slow = ema(lc, EMA_SLOW)
@@ -85,24 +88,13 @@ def analyze_symbol(symbol):
         high_slow = ema(hc, EMA_SLOW)
         high_trend = ema(hc, EMA_TREND)
 
-        # ==================================================
+        # ----------------------------------------------------
         # INDICATORS
-        # ==================================================
+        # ----------------------------------------------------
 
-        low_rsi = rsi(
-            lc,
-            RSI_PERIOD
-        )
-
-        low_atr = atr(
-            low,
-            ATR_PERIOD
-        )
-
-        low_mom = momentum(
-            lc,
-            5
-        )
+        low_rsi = rsi(lc, RSI_PERIOD)
+        low_atr = atr(low, ATR_PERIOD)
+        low_mom = momentum(lc, 5)
 
         vol_ma = volume_ma(
             low["volume"],
@@ -111,36 +103,57 @@ def analyze_symbol(symbol):
 
         macd_line, macd_signal, macd_hist = macd(lc)
 
-        adx_v = adx(
-            low,
-            14
+        adx_v = adx(low, 14)
+
+        low_ts = trend_strength(
+            low_fast,
+            low_slow
         )
+
+        # ----------------------------------------------------
+        # CURRENT VALUES
+        # ----------------------------------------------------
 
         i = -1
 
-        # ==================================================
-        # PRICE / ATR
-        # ==================================================
+        price = _num(lc.iloc[i])
+        a = _num(low_atr.iloc[i])
+        r = _num(low_rsi.iloc[i])
+        mom = _num(low_mom.iloc[i])
+        ts = _num(low_ts.iloc[i])
+        adx_now = _num(adx_v.iloc[i])
+        hist_now = _num(macd_hist.iloc[i])
 
-        price = _num(
-            lc.iloc[i]
-        )
-
-        atr_value = _num(
-            low_atr.iloc[i]
-        )
-
-        if price is None or price <= 0:
+        if (
+            price is None
+            or a is None
+            or r is None
+            or mom is None
+            or ts is None
+            or adx_now is None
+            or hist_now is None
+        ):
             return None
 
-        if atr_value is None or atr_value <= 0:
+        if price <= 0 or a <= 0:
             return None
 
-        atr_pct = atr_value / price
+        # ----------------------------------------------------
+        # ATR
+        # ----------------------------------------------------
 
-        # ==================================================
+        atr_pct = a / price
+
+        if not (
+            MIN_ATR_PERCENT
+            <= atr_pct
+            <= MAX_ATR_PERCENT
+        ):
+            return None
+
+        # ----------------------------------------------------
         # VOLUME
-        # ==================================================
+        # ----------------------------------------------------
 
         current_volume = _num(
             low["volume"].iloc[i]
@@ -150,240 +163,200 @@ def analyze_symbol(symbol):
             vol_ma.iloc[i]
         )
 
-        if current_volume is None:
-            return None
-
-        if volume_average is None or volume_average <= 0:
-            return None
-
-        volume_ratio = (
-            current_volume /
-            volume_average
-        )
-
-        # ==================================================
-        # MOMENTUM
-        # ==================================================
-
-        momentum_now = _num(
-            low_mom.iloc[i]
-        )
-
-        if momentum_now is None:
-            return None
-
-        # ==================================================
-        # TREND STRENGTH
-        # ==================================================
-
-        trend_value = _num(
-            trend_strength(
-                low_fast,
-                low_slow
-            ).iloc[i]
-        )
-
-        if trend_value is None:
-            return None
-
-        # ==================================================
-        # RSI
-        # ==================================================
-
-        rsi_now = _num(
-            low_rsi.iloc[i]
-        )
-
-        if rsi_now is None:
-            return None
-
-        # ==================================================
-        # ADX
-        # ==================================================
-
-        adx_now = _num(
-            adx_v.iloc[i]
-        )
-
-        if adx_now is None:
-            adx_now = 0.0
-
-        # ==================================================
-        # MACD
-        # ==================================================
-
-        hist_now = _num(
-            macd_hist.iloc[i]
-        )
-
-        if hist_now is None:
-            hist_now = 0.0
-
-        # ==================================================
-        # HIGHER TIMEFRAME TREND
-        # ==================================================
-
-        high_trend_value = _num(
-            high_trend.iloc[i]
-        )
-
-        high_fast_value = _num(
-            high_fast.iloc[i]
-        )
-
-        high_slow_value = _num(
-            high_slow.iloc[i]
-        )
-
         if (
-            high_trend_value is None
-            or high_fast_value is None
-            or high_slow_value is None
+            current_volume is None
+            or volume_average is None
+            or volume_average <= 0
         ):
             return None
 
+        vol_ratio = current_volume / volume_average
+
+        # ----------------------------------------------------
+        # TREND
+        # ----------------------------------------------------
+
+        high_price = _num(hc.iloc[i])
+        high_trend_value = _num(high_trend.iloc[i])
+        high_fast_value = _num(high_fast.iloc[i])
+        high_slow_value = _num(high_slow.iloc[i])
+
+        low_trend_value = _num(low_trend.iloc[i])
+        low_fast_value = _num(low_fast.iloc[i])
+        low_slow_value = _num(low_slow.iloc[i])
+
+        if None in (
+            high_price,
+            high_trend_value,
+            high_fast_value,
+            high_slow_value,
+            low_trend_value,
+            low_fast_value,
+            low_slow_value,
+        ):
+            return None
+
+        # Higher timeframe trend
         htf_bull = (
-            float(hc.iloc[i]) > high_trend_value
+            high_price > high_trend_value
             and high_fast_value > high_slow_value
         )
 
-        # ==================================================
-        # LOWER TIMEFRAME TREND
-        # ==================================================
-
-        low_trend_value = _num(
-            low_trend.iloc[i]
-        )
-
-        low_fast_value = _num(
-            low_fast.iloc[i]
-        )
-
-        low_slow_value = _num(
-            low_slow.iloc[i]
-        )
-
-        if (
-            low_trend_value is None
-            or low_fast_value is None
-            or low_slow_value is None
-        ):
-            return None
-
+        # Lower timeframe trend
         ltf_bull = (
             price > low_trend_value
             and low_fast_value > low_slow_value
         )
 
-        # ==================================================
-        # CANDLE BODY
-        # ==================================================
+        # ----------------------------------------------------
+        # CANDLE
+        # ----------------------------------------------------
 
-        open_price = _num(
+        candle_open = _num(
             low["open"].iloc[i]
         )
 
-        close_price = _num(
+        candle_close = _num(
             low["close"].iloc[i]
         )
 
         if (
-            open_price is None
-            or close_price is None
-            or open_price <= 0
+            candle_open is None
+            or candle_close is None
+            or candle_open <= 0
         ):
             return None
 
         candle_body = (
-            abs(close_price - open_price)
-            / open_price
+            abs(candle_close - candle_open)
+            / candle_open
         )
 
-        # ==================================================
-        # HARD MARKET QUALITY FILTERS
-        # ==================================================
+        # ----------------------------------------------------
+        # HARD QUALITY FILTERS
+        # ----------------------------------------------------
 
-        if not (
-            MIN_ATR_PERCENT
-            <= atr_pct
-            <= MAX_ATR_PERCENT
-        ):
+        # We want the bigger trend to agree.
+        if not htf_bull:
             return None
 
-        if not (
-            RSI_MIN
-            <= rsi_now
-            <= RSI_MAX
-        ):
+        # We also want the entry timeframe aligned.
+        if not ltf_bull:
             return None
 
-        if momentum_now < MIN_MOMENTUM:
+        # Avoid overbought entries.
+        if r < max(RSI_MIN, 52):
             return None
 
-        if trend_value < MIN_TREND_STRENGTH:
+        if r > min(RSI_MAX, 68):
             return None
 
+        # Minimum momentum.
+        if mom < max(MIN_MOMENTUM, 0.002):
+            return None
+
+        # Trend strength.
+        if ts < MIN_TREND_STRENGTH:
+            return None
+
+        # Volume confirmation.
+        if vol_ratio < max(VOLUME_MULTIPLIER, 1.15):
+            return None
+
+        # MACD must confirm bullish momentum.
+        if hist_now <= 0:
+            return None
+
+        # ADX must confirm a real trend.
+        if adx_now < 25:
+            return None
+
+        # Avoid buying an abnormally large green candle.
         if candle_body > MAX_GREEN_CANDLE:
             return None
 
-        # ==================================================
-        # SCORE
-        # ==================================================
+        # ----------------------------------------------------
+        # QUALITY SCORE
+        # ----------------------------------------------------
 
         score = 0
 
-        # HTF trend
-        if htf_bull:
-            score += 25
+        # Higher timeframe trend
+        score += 25
 
-        # LTF trend
-        if ltf_bull:
-            score += 20
+        # Lower timeframe trend
+        score += 20
 
         # RSI
-        if 55 <= rsi_now <= 65:
+        if 55 <= r <= 65:
             score += 15
-        elif 52 <= rsi_now <= 68:
+        elif 52 <= r <= 68:
             score += 10
-        else:
-            score += 5
 
         # Volume
-        if volume_ratio >= 1.50:
+        if vol_ratio >= 1.50:
             score += 15
-        elif volume_ratio >= 1.10:
-            score += 10
+        elif vol_ratio >= 1.25:
+            score += 12
         else:
-            score += 5
+            score += 8
 
         # Momentum
-        if momentum_now >= 0.006:
+        if mom >= 0.004:
             score += 10
-        elif momentum_now >= 0.003:
-            score += 7
+        elif mom >= 0.0025:
+            score += 8
         else:
-            score += 3
+            score += 5
 
         # ADX
         if adx_now >= 30:
             score += 10
-        elif adx_now >= 22:
+        elif adx_now >= 25:
             score += 7
         else:
-            score += 3
+            score += 5
 
         # MACD
         if hist_now > 0:
             score += 5
 
-        score = min(
-            int(score),
-            100
+        score = min(score, 100)
+
+        # ----------------------------------------------------
+        # BUY THRESHOLD
+        # ----------------------------------------------------
+
+        # Main goal:
+        # FEWER SIGNALS + BETTER QUALITY
+        buy_threshold = max(BUY_SCORE, 85)
+
+        signal = (
+            "BUY"
+            if score >= buy_threshold
+            else "WATCH"
         )
 
-        # ==================================================
-        # CONFIRMATION SYSTEM
-        # ==================================================
+        # ----------------------------------------------------
+        # QUALITY
+        # ----------------------------------------------------
+
+        if score >= 90:
+            quality = "A+"
+        elif score >= 85:
+            quality = "A"
+        elif score >= 78:
+            quality = "B"
+        elif score >= 70:
+            quality = "C"
+        else:
+            quality = "D"
+
+        confidence = score
+
+        # ----------------------------------------------------
+        # CONFIRMATION SCORE
+        # ----------------------------------------------------
 
         confirmations = 0
 
@@ -393,97 +366,68 @@ def analyze_symbol(symbol):
         if ltf_bull:
             confirmations += 1
 
-        if adx_now >= 22:
+        if adx_now >= 25:
             confirmations += 1
 
-        if volume_ratio >= 1.10:
+        if vol_ratio >= 1.15:
             confirmations += 1
 
         if hist_now > 0:
             confirmations += 1
 
-        # ==================================================
-        # BUY RULE
-        #
-        # QUALITY > QUANTITY
-        # ==================================================
+        # BUY requires at least 4/5 confirmations.
+        if signal == "BUY" and confirmations < 4:
+            signal = "WATCH"
 
-        buy_signal = (
-            score >= max(
-                BUY_SCORE,
-                85
+        # ----------------------------------------------------
+        # DEBUG
+        # ----------------------------------------------------
+
+        if signal == "BUY":
+
+            print(
+                f"[CANDIDATE] {symbol} BUY "
+                f"Score={score} "
+                f"RSI={r:.1f} "
+                f"ADX={adx_now:.1f} "
+                f"MOM={mom:.4f} "
+                f"VOL={vol_ratio:.2f} "
+                f"HTF={htf_bull} "
+                f"LTF={ltf_bull} "
+                f"CONF={confirmations}/5"
             )
-            and htf_bull
-            and ltf_bull
-            and adx_now >= 22
-            and volume_ratio >= 1.10
-            and hist_now > 0
-            and confirmations >= 4
-        )
 
-        # ==================================================
-        # SIGNAL TYPE
-        # ==================================================
-
-        if buy_signal:
-
-            signal_type = "BUY"
-
-        elif score >= 70:
-
-            signal_type = "WATCH"
-
-        else:
-
-            signal_type = "NONE"
-
-        # ==================================================
-        # QUALITY
-        # ==================================================
-
-        if score >= 90 and confirmations >= 5:
-            quality = "A+"
-
-        elif score >= 85 and confirmations >= 4:
-            quality = "A"
-
-        elif score >= 75:
-            quality = "B"
-
-        else:
-            quality = "C"
-
-        # ==================================================
-        # RESULT
-        # ==================================================
+        # ----------------------------------------------------
+        # RETURN
+        # ----------------------------------------------------
 
         return {
             "symbol": symbol,
-            "signal": signal_type,
-
+            "signal": signal,
             "score": score,
-            "confidence": score,
+            "confidence": confidence,
             "quality": quality,
 
-            "confirmations": confirmations,
-
             "close": price,
-            "atr": atr_value,
+            "atr": a,
 
-            "trend_strength": trend_value,
-            "momentum": momentum_now,
+            "trend_strength": ts,
+            "momentum": mom,
 
             "volume": current_volume,
             "volume_ma": volume_average,
-            "volume_ratio": volume_ratio,
 
-            "rsi": rsi_now,
+            "rsi": r,
             "adx": adx_now,
 
-            "macd_hist": hist_now,
+            "atr_percent": atr_pct,
+            "volume_ratio": vol_ratio,
 
             "htf_bull": htf_bull,
             "ltf_bull": ltf_bull,
+
+            "macd_hist": hist_now,
+            "confirmations": confirmations,
         }
 
     except Exception as exc:
@@ -495,9 +439,9 @@ def analyze_symbol(symbol):
         return None
 
 
-# ==========================================================
+# ============================================================
 # SCAN MARKET
-# ==========================================================
+# ============================================================
 
 def scan_market():
 
@@ -505,110 +449,71 @@ def scan_market():
 
     checked = 0
     candidates = 0
-    buy_count = 0
-    watch_count = 0
+    buys = 0
+    watches = 0
 
     for symbol in SYMBOLS:
 
         checked += 1
 
-        result = analyze_symbol(
-            symbol
-        )
+        result = analyze_symbol(symbol)
 
         if not result:
-            continue
-
-        if result["signal"] == "NONE":
             continue
 
         candidates += 1
 
         if result["signal"] == "BUY":
-
-            buy_count += 1
-
-            print(
-                f"[CANDIDATE] "
-                f"{symbol} BUY "
-                f"Score={result['score']} "
-                f"RSI={result['rsi']:.1f} "
-                f"ADX={result['adx']:.1f} "
-                f"MOM={result['momentum']:.4f} "
-                f"VOL={result['volume_ratio']:.2f} "
-                f"HTF={result['htf_bull']} "
-                f"LTF={result['ltf_bull']} "
-                f"CONF={result['confirmations']}/5"
-            )
-
+            buys += 1
             signals.append(result)
 
         elif result["signal"] == "WATCH":
+            watches += 1
 
-            watch_count += 1
-
-            signals.append(result)
-
-    # ======================================================
-    # SORT
-    # ======================================================
+    # --------------------------------------------------------
+    # SORT BEST BUY SIGNALS FIRST
+    # --------------------------------------------------------
 
     signals.sort(
         key=lambda x: (
-            x["signal"] == "BUY",
             x["score"],
             x["confirmations"],
+            x["adx"],
             x["momentum"],
             x["volume_ratio"],
         ),
-        reverse=True
+        reverse=True,
     )
 
-    # ======================================================
-    # LOGGING
-    # ======================================================
+    # --------------------------------------------------------
+    # SCAN SUMMARY
+    # --------------------------------------------------------
 
     print(
-        f"[SCAN] "
-        f"Checked={checked} "
+        f"[SCAN] Checked={checked} "
         f"Candidates={candidates} "
-        f"BUY={buy_count} "
-        f"WATCH={watch_count}"
+        f"BUY={buys} "
+        f"WATCH={watches}"
     )
 
-    # ======================================================
-    # TOP WATCH
-    # ======================================================
+    # --------------------------------------------------------
+    # TOP BUY
+    # --------------------------------------------------------
 
-    watch_only = [
-        x for x in signals
-        if x["signal"] == "WATCH"
-    ]
+    if signals:
 
-    if watch_only and buy_count == 0:
-
-        top = watch_only[0]
+        top = signals[0]
 
         print(
-            f"[TOP WATCH] "
+            f"[TOP BUY] "
             f"{top['symbol']} "
             f"Score={top['score']} "
+            f"Quality={top['quality']} "
             f"RSI={top['rsi']:.1f} "
             f"ADX={top['adx']:.1f} "
             f"MOM={top['momentum']:.4f} "
             f"VOL={top['volume_ratio']:.2f} "
-            f"HTF={top['htf_bull']} "
-            f"LTF={top['ltf_bull']}"
+            f"CONF={top['confirmations']}/5"
         )
 
-    # ======================================================
-    # IMPORTANT:
-    # RETURN ONLY BUY SIGNALS TO TRADING ENGINE
-    # ======================================================
-
-    buy_signals = [
-        x for x in signals
-        if x["signal"] == "BUY"
-    ]
-
-    return buy_signals
+    return signals
