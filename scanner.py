@@ -546,7 +546,7 @@ def analyze_symbol(symbol):
             and confidence >= 85
             and htf_bull
             and ltf_bull
-            and adx_now >= 25
+            and adx_now >= 20
             and hist_now > 0
             and vol_ratio >= 1.20
             and mom >= 0.003
