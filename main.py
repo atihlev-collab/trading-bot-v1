@@ -11,7 +11,7 @@ from market_data import get_price
 
 
 # =========================================================
-# INITIALIZATION
+# INIT
 # =========================================================
 
 init_db()
@@ -33,14 +33,27 @@ COOLDOWN_SECONDS = config.COOLDOWN_HOURS * 3600
 
 info("=" * 65)
 info("Trading Bot V4 Started")
-info(f"Start balance: {trader.start_balance:.2f} USDT")
-info(f"Risk/trade: {trader.risk_percent:.1f}%")
-info(f"Max positions: {trader.max_open_positions}")
+info("=" * 65)
 
-# Keep this informational only.
-# Scanner remains responsible for BUY / WATCH quality.
-if hasattr(config, "BUY_SCORE"):
-    info(f"BUY score threshold: {config.BUY_SCORE}")
+info(
+    f"Start balance: "
+    f"{trader.start_balance:.2f} USDT"
+)
+
+info(
+    f"Risk/trade: "
+    f"{trader.risk_percent:.1f}%"
+)
+
+info(
+    f"Max positions: "
+    f"{trader.max_open_positions}"
+)
+
+info(
+    f"BUY score threshold: "
+    f"{config.BUY_SCORE}"
+)
 
 info("=" * 65)
 
@@ -51,6 +64,9 @@ info("=" * 65)
 
 def manage_positions():
 
+    if not trader.positions:
+        return
+
     for symbol in list(trader.positions.keys()):
 
         try:
@@ -58,37 +74,44 @@ def manage_positions():
             price = get_price(symbol)
 
             if price is None:
-                warning(f"[PRICE] No price for {symbol}")
+                warning(
+                    f"[PRICE] No price for {symbol}"
+                )
                 continue
 
-            result = trader.update_position(symbol, price)
+            result = trader.update_position(
+                symbol,
+                price
+            )
 
-            if result:
+            if not result:
+                continue
 
-                save_trade(result)
+            save_trade(result)
 
-                pnl = result.get("pnl", 0)
+            pnl = result["pnl"]
 
-                if pnl < 0:
+            if pnl < 0:
 
-                    cooldown[symbol] = time.time()
+                cooldown[symbol] = time.time()
 
-                    warning(
-                        f"[LOSS] {symbol} "
-                        f"{pnl:+.4f} USDT"
-                    )
+                warning(
+                    f"[LOSS] {symbol} "
+                    f"{pnl:+.4f} USDT"
+                )
 
-                else:
+            else:
 
-                    info(
-                        f"[WIN] {symbol} "
-                        f"{pnl:+.4f} USDT"
-                    )
+                info(
+                    f"[WIN] {symbol} "
+                    f"{pnl:+.4f} USDT"
+                )
 
         except Exception as exc:
 
             error(
-                f"POSITION ERROR {symbol}: {exc}"
+                f"[POSITION ERROR] "
+                f"{symbol}: {exc}"
             )
 
 
@@ -99,21 +122,48 @@ def manage_positions():
 def scan():
 
     # -----------------------------------------------------
-    # NO FREE POSITION SLOTS
+    # No free positions
     # -----------------------------------------------------
 
     if trader.free_slots() <= 0:
 
-        info("No free slots")
+        info("[SCAN] No free slots")
 
         return
 
 
     # -----------------------------------------------------
-    # RUN SCANNER
+    # Call scanner
     # -----------------------------------------------------
 
-    signals = scan_market()
+    try:
+
+        signals = scan_market()
+
+    except Exception as exc:
+
+        error(
+            f"[SCANNER ERROR] {exc}"
+        )
+
+        traceback.print_exc()
+
+        return
+
+
+    # -----------------------------------------------------
+    # Scanner returned nothing
+    # -----------------------------------------------------
+
+    if not signals:
+
+        info(
+            "[QUALITY] "
+            "No candidates returned by scanner"
+        )
+
+        return
+
 
     info(
         f"scan_market returned "
@@ -121,156 +171,210 @@ def scan():
     )
 
 
-    # -----------------------------------------------------
-    # NOTHING FOUND
-    # -----------------------------------------------------
-
-    if not signals:
-
-        info(
-            "[QUALITY] No candidates "
-            "returned by scanner"
-        )
-
-        return
-
-
-    # -----------------------------------------------------
-    # SHOW TOP SIGNAL
-    # -----------------------------------------------------
-
-    top = signals[0]
-
-    info(
-        f"[TOP] {top.get('symbol', '?')} "
-        f"{top.get('signal', '?')} "
-        f"Score={top.get('score', 0)} "
-        f"Confidence={top.get('confidence', 0)} "
-        f"Quality={top.get('quality', '?')}"
-    )
-
-
-    # -----------------------------------------------------
+    # =====================================================
     # PROCESS SIGNALS
-    # -----------------------------------------------------
+    # =====================================================
 
     for s in signals:
 
-        # Stop if all slots are occupied
-        if trader.free_slots() <= 0:
+        try:
 
-            info("No free slots")
-
-            break
+            if trader.free_slots() <= 0:
+                break
 
 
-        symbol = s.get("symbol")
+            symbol = s.get("symbol")
 
-        if not symbol:
-            continue
+            if not symbol:
+                continue
 
 
-        # -------------------------------------------------
-        # COOLDOWN AFTER LOSS
-        # -------------------------------------------------
+            signal_type = s.get(
+                "signal",
+                "WAIT"
+            )
 
-        if symbol in cooldown:
+            score = float(
+                s.get("score", 0)
+            )
 
-            elapsed = time.time() - cooldown[symbol]
+            confidence = float(
+                s.get("confidence", 0)
+            )
 
-            if elapsed < COOLDOWN_SECONDS:
+            quality = s.get(
+                "quality",
+                "C"
+            )
 
-                remaining = (
-                    COOLDOWN_SECONDS - elapsed
-                )
+
+            # -------------------------------------------------
+            # SHOW TOP SCANNER RESULT
+            # -------------------------------------------------
+
+            info(
+                f"[TOP] {symbol} "
+                f"{signal_type} "
+                f"Score={score:.0f} "
+                f"Confidence={confidence:.0f} "
+                f"Quality={quality}"
+            )
+
+
+            # -------------------------------------------------
+            # ONLY BUY SIGNALS CAN OPEN POSITIONS
+            # -------------------------------------------------
+
+            if signal_type != "BUY":
+
+                continue
+
+
+            # -------------------------------------------------
+            # SCORE FILTER
+            #
+            # IMPORTANT:
+            # Do NOT require A+ here.
+            # BUY_SCORE comes from config.py.
+            # -------------------------------------------------
+
+            if score < config.BUY_SCORE:
 
                 info(
-                    f"[COOLDOWN] {symbol} "
-                    f"{remaining / 3600:.2f}h remaining"
+                    f"[SKIP] {symbol} "
+                    f"Score {score:.0f} "
+                    f"< BUY_SCORE "
+                    f"{config.BUY_SCORE}"
                 )
 
                 continue
 
-            else:
 
-                del cooldown[symbol]
+            # -------------------------------------------------
+            # CONFIDENCE
+            #
+            # Scanner already calculates confidence.
+            # Keep it consistent with BUY score.
+            # -------------------------------------------------
 
+            if confidence < config.BUY_SCORE:
 
-        # -------------------------------------------------
-        # SCANNER DECIDES BUY / WATCH
-        # -------------------------------------------------
+                info(
+                    f"[SKIP] {symbol} "
+                    f"Confidence {confidence:.0f} "
+                    f"< {config.BUY_SCORE}"
+                )
 
-        if s.get("signal") != "BUY":
-
-            continue
-
-
-        # -------------------------------------------------
-        # BUY SCORE
-        #
-        # This is only the configured BUY threshold.
-        # There is NO SECOND A+ QUALITY FILTER here.
-        # -------------------------------------------------
-
-        score = s.get("score", 0)
-
-        buy_score = getattr(
-            config,
-            "BUY_SCORE",
-            90
-        )
-
-        if score < buy_score:
-
-            info(
-                f"[FILTER] {symbol} "
-                f"Score={score} < BUY_SCORE={buy_score}"
-            )
-
-            continue
+                continue
 
 
-        # -------------------------------------------------
-        # OPEN POSITION
-        # -------------------------------------------------
+            # -------------------------------------------------
+            # EXISTING POSITION
+            # -------------------------------------------------
 
-        try:
+            if trader.has_position(symbol):
+
+                info(
+                    f"[SKIP] {symbol} "
+                    f"already has position"
+                )
+
+                continue
+
+
+            # -------------------------------------------------
+            # COOLDOWN AFTER LOSS
+            # -------------------------------------------------
+
+            if symbol in cooldown:
+
+                elapsed = (
+                    time.time()
+                    - cooldown[symbol]
+                )
+
+                if elapsed < COOLDOWN_SECONDS:
+
+                    remaining = (
+                        COOLDOWN_SECONDS
+                        - elapsed
+                    )
+
+                    info(
+                        f"[COOLDOWN] {symbol} "
+                        f"{remaining / 60:.0f} min remaining"
+                    )
+
+                    continue
+
+                else:
+
+                    del cooldown[symbol]
+
+
+            # -------------------------------------------------
+            # OPEN POSITION
+            # -------------------------------------------------
 
             opened = trader.try_open_position(
                 symbol,
                 s
             )
 
+
+            if opened:
+
+                signal(
+                    f"{symbol} BUY "
+                    f"Score={score:.0f} "
+                    f"Confidence={confidence:.0f} "
+                    f"Quality={quality}"
+                )
+
+            else:
+
+                warning(
+                    f"[OPEN FAILED] "
+                    f"{symbol}"
+                )
+
+
         except Exception as exc:
 
             error(
-                f"[OPEN ERROR] {symbol}: {exc}"
+                f"[SIGNAL ERROR] "
+                f"{exc}"
             )
 
-            continue
+            traceback.print_exc()
 
 
-        # -------------------------------------------------
-        # SUCCESS
-        # -------------------------------------------------
+# =========================================================
+# REPORT
+# =========================================================
 
-        if opened:
+def report():
 
-            signal(
-                f"{symbol} BUY "
-                f"Score={s.get('score', 0)} "
-                f"Confidence={s.get('confidence', 0)} "
-                f"Quality={s.get('quality', '?')}"
+    global last_report
+
+    now = time.time()
+
+    if (
+        now - last_report
+        >= REPORT_SECONDS
+    ):
+
+        try:
+
+            print_report(trader)
+
+        except Exception as exc:
+
+            error(
+                f"[REPORT ERROR] {exc}"
             )
 
-        else:
-
-            warning(
-                f"[OPEN FAILED] {symbol} "
-                f"Score={s.get('score', 0)} "
-                f"Confidence={s.get('confidence', 0)} "
-                f"Quality={s.get('quality', '?')}"
-            )
+        last_report = now
 
 
 # =========================================================
@@ -279,29 +383,22 @@ def scan():
 
 def main():
 
-    global last_report
+    info("=== LOOP START ===")
 
     while True:
 
         try:
 
-            # -------------------------------------------------
-            # LOOP START
-            # -------------------------------------------------
-
-            info("=== LOOP START ===")
-
-
-            # -------------------------------------------------
-            # MANAGE EXISTING POSITIONS
-            # -------------------------------------------------
+            # =================================================
+            # 1. MANAGE OPEN POSITIONS
+            # =================================================
 
             manage_positions()
 
 
-            # -------------------------------------------------
-            # ACCOUNT STATUS
-            # -------------------------------------------------
+            # =================================================
+            # 2. ACCOUNT STATUS
+            # =================================================
 
             stats = trader.stats()
 
@@ -317,63 +414,43 @@ def main():
             )
 
 
-            # -------------------------------------------------
-            # MARKET SCAN
-            # -------------------------------------------------
+            # =================================================
+            # 3. SCAN MARKET
+            # =================================================
 
             scan()
 
 
-            # -------------------------------------------------
-            # PERIODIC REPORT
-            # -------------------------------------------------
+            # =================================================
+            # 4. PERIODIC REPORT
+            # =================================================
 
-            if (
-                time.time() - last_report
-                >= REPORT_SECONDS
-            ):
-
-                try:
-
-                    print_report(trader)
-
-                except Exception as exc:
-
-                    error(
-                        f"REPORT ERROR: {exc}"
-                    )
-
-                last_report = time.time()
+            report()
 
 
-            # -------------------------------------------------
-            # WAIT
-            # -------------------------------------------------
+            # =================================================
+            # 5. WAIT
+            # =================================================
 
             time.sleep(
                 config.SCAN_SECONDS
             )
 
 
-        # =====================================================
-        # STOP
-        # =====================================================
-
         except KeyboardInterrupt:
 
-            info("Bot stopped.")
+            info(
+                "Bot stopped."
+            )
 
             break
 
 
-        # =====================================================
-        # UNEXPECTED ERROR
-        # =====================================================
-
         except Exception as exc:
 
             error(
-                f"MAIN LOOP ERROR: {exc}"
+                f"[MAIN LOOP ERROR] "
+                f"{exc}"
             )
 
             traceback.print_exc()
@@ -382,7 +459,7 @@ def main():
 
 
 # =========================================================
-# ENTRY POINT
+# START
 # =========================================================
 
 if __name__ == "__main__":
