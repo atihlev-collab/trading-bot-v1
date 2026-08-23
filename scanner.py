@@ -548,7 +548,7 @@ def analyze_symbol(symbol):
             and ltf_bull
             and adx_now >= 20
             and hist_now > 0
-            and vol_ratio >= 1.20
+            and vol_ratio >= 1.15
             and mom >= 0.003
         ):
 
