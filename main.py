@@ -11,7 +11,7 @@ from market_data import get_price
 
 
 # =========================================================
-# INIT
+# INITIALIZATION
 # =========================================================
 
 init_db()
@@ -20,15 +20,11 @@ trader = PaperTrader()
 
 last_report = time.time()
 
-REPORT_SECONDS = (
-    config.REPORT_INTERVAL_MINUTES * 60
-)
+REPORT_SECONDS = config.REPORT_INTERVAL_MINUTES * 60
 
 cooldown = {}
 
-COOLDOWN_SECONDS = (
-    config.COOLDOWN_HOURS * 3600
-)
+COOLDOWN_SECONDS = config.COOLDOWN_HOURS * 3600
 
 
 # =========================================================
@@ -41,16 +37,10 @@ info(f"Start balance: {trader.start_balance:.2f} USDT")
 info(f"Risk/trade: {trader.risk_percent:.1f}%")
 info(f"Max positions: {trader.max_open_positions}")
 
-# Quality settings
-info(
-    f"Quality mode: Score >= "
-    f"{getattr(config, 'QUALITY_SCORE', 90)}"
-)
-
-info(
-    f"Required quality: "
-    f"{getattr(config, 'REQUIRED_QUALITY', 'A+')}"
-)
+# Keep this informational only.
+# Scanner remains responsible for BUY / WATCH quality.
+if hasattr(config, "BUY_SCORE"):
+    info(f"BUY score threshold: {config.BUY_SCORE}")
 
 info("=" * 65)
 
@@ -68,12 +58,10 @@ def manage_positions():
             price = get_price(symbol)
 
             if price is None:
+                warning(f"[PRICE] No price for {symbol}")
                 continue
 
-            result = trader.update_position(
-                symbol,
-                price
-            )
+            result = trader.update_position(symbol, price)
 
             if result:
 
@@ -100,92 +88,19 @@ def manage_positions():
         except Exception as exc:
 
             error(
-                f"POSITION ERROR "
-                f"{symbol}: {exc}"
+                f"POSITION ERROR {symbol}: {exc}"
             )
 
 
 # =========================================================
-# QUALITY CHECK
-# =========================================================
-
-def is_quality_buy(s):
-
-    if not s:
-        return False
-
-    signal_type = str(
-        s.get("signal", "")
-    ).upper()
-
-    score = float(
-        s.get("score", 0) or 0
-    )
-
-    confidence = float(
-        s.get("confidence", 0) or 0
-    )
-
-    quality = str(
-        s.get("quality", "")
-    ).upper()
-
-    required_score = float(
-        getattr(
-            config,
-            "QUALITY_SCORE",
-            90
-        )
-    )
-
-    required_quality = str(
-        getattr(
-            config,
-            "REQUIRED_QUALITY",
-            "A+"
-        )
-    ).upper()
-
-    # -----------------------------------------------------
-    # REAL BUY SIGNAL
-    # -----------------------------------------------------
-
-    if signal_type != "BUY":
-
-        return False
-
-    # -----------------------------------------------------
-    # SCORE
-    # -----------------------------------------------------
-
-    if score < required_score:
-
-        return False
-
-    # -----------------------------------------------------
-    # QUALITY
-    # -----------------------------------------------------
-
-    if quality != required_quality:
-
-        return False
-
-    # -----------------------------------------------------
-    # CONFIDENCE
-    # -----------------------------------------------------
-
-    if confidence < 85:
-
-        return False
-
-    return True
-
-
-# =========================================================
-# SCAN
+# MARKET SCAN
 # =========================================================
 
 def scan():
+
+    # -----------------------------------------------------
+    # NO FREE POSITION SLOTS
+    # -----------------------------------------------------
 
     if trader.free_slots() <= 0:
 
@@ -193,22 +108,22 @@ def scan():
 
         return
 
-    try:
 
-        signals = scan_market()
+    # -----------------------------------------------------
+    # RUN SCANNER
+    # -----------------------------------------------------
 
-    except Exception as exc:
-
-        error(
-            f"SCAN ERROR: {exc}"
-        )
-
-        return
+    signals = scan_market()
 
     info(
         f"scan_market returned "
         f"{len(signals)} signals"
     )
+
+
+    # -----------------------------------------------------
+    # NOTHING FOUND
+    # -----------------------------------------------------
 
     if not signals:
 
@@ -219,6 +134,7 @@ def scan():
 
         return
 
+
     # -----------------------------------------------------
     # SHOW TOP SIGNAL
     # -----------------------------------------------------
@@ -226,105 +142,96 @@ def scan():
     top = signals[0]
 
     info(
-        f"[TOP] "
-        f"{top.get('symbol')} "
-        f"{top.get('signal')} "
-        f"Score={top.get('score')} "
-        f"Confidence={top.get('confidence')} "
-        f"Quality={top.get('quality')}"
+        f"[TOP] {top.get('symbol', '?')} "
+        f"{top.get('signal', '?')} "
+        f"Score={top.get('score', 0)} "
+        f"Confidence={top.get('confidence', 0)} "
+        f"Quality={top.get('quality', '?')}"
     )
 
-    # -----------------------------------------------------
-    # FIND QUALITY BUY
-    # -----------------------------------------------------
 
-    quality_buys = []
+    # -----------------------------------------------------
+    # PROCESS SIGNALS
+    # -----------------------------------------------------
 
     for s in signals:
 
-        if is_quality_buy(s):
-
-            quality_buys.append(s)
-
-    # -----------------------------------------------------
-    # NO QUALITY SIGNAL
-    # -----------------------------------------------------
-
-    if not quality_buys:
-
-        info(
-            "[QUALITY] No A+ setup "
-            "found this scan"
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # SORT BEST FIRST
-    # -----------------------------------------------------
-
-    quality_buys.sort(
-        key=lambda x: (
-            float(x.get("score", 0) or 0),
-            float(x.get("confidence", 0) or 0),
-            float(x.get("adx", 0) or 0),
-            float(x.get("momentum", 0) or 0),
-            float(x.get("volume_ratio", 0) or 0),
-        ),
-        reverse=True
-    )
-
-    # -----------------------------------------------------
-    # OPEN POSITIONS
-    # -----------------------------------------------------
-
-    for s in quality_buys:
-
+        # Stop if all slots are occupied
         if trader.free_slots() <= 0:
 
+            info("No free slots")
+
             break
+
 
         symbol = s.get("symbol")
 
         if not symbol:
+            continue
+
+
+        # -------------------------------------------------
+        # COOLDOWN AFTER LOSS
+        # -------------------------------------------------
+
+        if symbol in cooldown:
+
+            elapsed = time.time() - cooldown[symbol]
+
+            if elapsed < COOLDOWN_SECONDS:
+
+                remaining = (
+                    COOLDOWN_SECONDS - elapsed
+                )
+
+                info(
+                    f"[COOLDOWN] {symbol} "
+                    f"{remaining / 3600:.2f}h remaining"
+                )
+
+                continue
+
+            else:
+
+                del cooldown[symbol]
+
+
+        # -------------------------------------------------
+        # SCANNER DECIDES BUY / WATCH
+        # -------------------------------------------------
+
+        if s.get("signal") != "BUY":
 
             continue
 
+
         # -------------------------------------------------
-        # COOLDOWN
+        # BUY SCORE
+        #
+        # This is only the configured BUY threshold.
+        # There is NO SECOND A+ QUALITY FILTER here.
         # -------------------------------------------------
 
-        if (
-            symbol in cooldown
-            and
-            time.time() - cooldown[symbol]
-            < COOLDOWN_SECONDS
-        ):
+        score = s.get("score", 0)
+
+        buy_score = getattr(
+            config,
+            "BUY_SCORE",
+            90
+        )
+
+        if score < buy_score:
 
             info(
-                f"[COOLDOWN] {symbol}"
+                f"[FILTER] {symbol} "
+                f"Score={score} < BUY_SCORE={buy_score}"
             )
 
             continue
 
-        # -------------------------------------------------
-        # FINAL VALIDATION
-        # -------------------------------------------------
-
-        if not is_quality_buy(s):
-
-            continue
-
-        info(
-            f"[QUALITY BUY] "
-            f"{symbol} "
-            f"Score={s.get('score')} "
-            f"Confidence={s.get('confidence')} "
-            f"Quality={s.get('quality')}"
-        )
 
         # -------------------------------------------------
-        # OPEN
+        # OPEN POSITION
         # -------------------------------------------------
 
         try:
@@ -337,26 +244,32 @@ def scan():
         except Exception as exc:
 
             error(
-                f"OPEN ERROR "
-                f"{symbol}: {exc}"
+                f"[OPEN ERROR] {symbol}: {exc}"
             )
 
             continue
 
+
+        # -------------------------------------------------
+        # SUCCESS
+        # -------------------------------------------------
+
         if opened:
 
             signal(
-                f"🔥 {symbol} BUY "
-                f"Score={s.get('score')} "
-                f"Confidence={s.get('confidence')} "
-                f"Quality={s.get('quality')}"
+                f"{symbol} BUY "
+                f"Score={s.get('score', 0)} "
+                f"Confidence={s.get('confidence', 0)} "
+                f"Quality={s.get('quality', '?')}"
             )
 
         else:
 
             warning(
-                f"[OPEN FAILED] "
-                f"{symbol}"
+                f"[OPEN FAILED] {symbol} "
+                f"Score={s.get('score', 0)} "
+                f"Confidence={s.get('confidence', 0)} "
+                f"Quality={s.get('quality', '?')}"
             )
 
 
@@ -372,19 +285,23 @@ def main():
 
         try:
 
-            info(
-                "=== LOOP START ==="
-            )
+            # -------------------------------------------------
+            # LOOP START
+            # -------------------------------------------------
 
-            # ---------------------------------------------
-            # POSITIONS
-            # ---------------------------------------------
+            info("=== LOOP START ===")
+
+
+            # -------------------------------------------------
+            # MANAGE EXISTING POSITIONS
+            # -------------------------------------------------
 
             manage_positions()
 
-            # ---------------------------------------------
-            # STATS
-            # ---------------------------------------------
+
+            # -------------------------------------------------
+            # ACCOUNT STATUS
+            # -------------------------------------------------
 
             stats = trader.stats()
 
@@ -399,40 +316,59 @@ def main():
                 f"{stats['positions']}"
             )
 
-            # ---------------------------------------------
-            # SCAN
-            # ---------------------------------------------
+
+            # -------------------------------------------------
+            # MARKET SCAN
+            # -------------------------------------------------
 
             scan()
 
-            # ---------------------------------------------
-            # REPORT
-            # ---------------------------------------------
+
+            # -------------------------------------------------
+            # PERIODIC REPORT
+            # -------------------------------------------------
 
             if (
                 time.time() - last_report
                 >= REPORT_SECONDS
             ):
 
-                print_report(trader)
+                try:
+
+                    print_report(trader)
+
+                except Exception as exc:
+
+                    error(
+                        f"REPORT ERROR: {exc}"
+                    )
 
                 last_report = time.time()
 
-            # ---------------------------------------------
+
+            # -------------------------------------------------
             # WAIT
-            # ---------------------------------------------
+            # -------------------------------------------------
 
             time.sleep(
                 config.SCAN_SECONDS
             )
 
+
+        # =====================================================
+        # STOP
+        # =====================================================
+
         except KeyboardInterrupt:
 
-            info(
-                "Bot stopped."
-            )
+            info("Bot stopped.")
 
             break
+
+
+        # =====================================================
+        # UNEXPECTED ERROR
+        # =====================================================
 
         except Exception as exc:
 
@@ -446,7 +382,7 @@ def main():
 
 
 # =========================================================
-# ENTRY
+# ENTRY POINT
 # =========================================================
 
 if __name__ == "__main__":
