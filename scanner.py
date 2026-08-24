@@ -62,6 +62,10 @@ def _safe_ratio(a, b):
     return 0.0
 
 
+def _clamp(value, low, high):
+    return max(low, min(high, value))
+
+
 # =========================================================
 # ANALYZE SYMBOL
 # =========================================================
@@ -97,44 +101,19 @@ def analyze_symbol(symbol):
         # EMA
         # -------------------------------------------------
 
-        low_fast = ema(
-            lc,
-            EMA_FAST
-        )
+        low_fast = ema(lc, EMA_FAST)
+        low_slow = ema(lc, EMA_SLOW)
+        low_trend = ema(lc, EMA_TREND)
 
-        low_slow = ema(
-            lc,
-            EMA_SLOW
-        )
-
-        low_trend = ema(
-            lc,
-            EMA_TREND
-        )
-
-        high_fast = ema(
-            hc,
-            EMA_FAST
-        )
-
-        high_slow = ema(
-            hc,
-            EMA_SLOW
-        )
-
-        high_trend = ema(
-            hc,
-            EMA_TREND
-        )
+        high_fast = ema(hc, EMA_FAST)
+        high_slow = ema(hc, EMA_SLOW)
+        high_trend = ema(hc, EMA_TREND)
 
         # -------------------------------------------------
         # INDICATORS
         # -------------------------------------------------
 
-        low_rsi = rsi(
-            lc,
-            RSI_PERIOD
-        )
+        low_rsi = rsi(lc, RSI_PERIOD)
 
         low_atr = atr(
             low,
@@ -151,9 +130,7 @@ def analyze_symbol(symbol):
             VOLUME_PERIOD
         )
 
-        macd_line, macd_signal, macd_hist = macd(
-            lc
-        )
+        macd_line, macd_signal, macd_hist = macd(lc)
 
         adx_v = adx(
             low,
@@ -166,27 +143,19 @@ def analyze_symbol(symbol):
 
         i = -1
 
-        price = _num(
-            lc.iloc[i]
-        )
+        price = _num(lc.iloc[i])
 
         if price is None or price <= 0:
             return None
 
-        a = _num(
-            low_atr.iloc[i]
-        )
+        a = _num(low_atr.iloc[i])
 
         if a is None or a <= 0:
             return None
 
-        r = _num(
-            low_rsi.iloc[i]
-        )
+        r = _num(low_rsi.iloc[i])
 
-        mom = _num(
-            low_mom.iloc[i]
-        )
+        mom = _num(low_mom.iloc[i])
 
         ts = _num(
             trend_strength(
@@ -195,13 +164,9 @@ def analyze_symbol(symbol):
             ).iloc[i]
         )
 
-        adx_now = _num(
-            adx_v.iloc[i]
-        ) or 0.0
+        adx_now = _num(adx_v.iloc[i]) or 0.0
 
-        hist_now = _num(
-            macd_hist.iloc[i]
-        ) or 0.0
+        hist_now = _num(macd_hist.iloc[i]) or 0.0
 
         volume_now = _num(
             low["volume"].iloc[i]
@@ -211,13 +176,7 @@ def analyze_symbol(symbol):
             vol_ma.iloc[i]
         ) or 0.0
 
-        if r is None:
-            return None
-
-        if mom is None:
-            return None
-
-        if ts is None:
+        if r is None or mom is None or ts is None:
             return None
 
         # -------------------------------------------------
@@ -239,9 +198,7 @@ def analyze_symbol(symbol):
         # HTF TREND
         # -------------------------------------------------
 
-        high_close = _num(
-            hc.iloc[i]
-        )
+        high_close = _num(hc.iloc[i])
 
         high_trend_now = _num(
             high_trend.iloc[i]
@@ -297,7 +254,7 @@ def analyze_symbol(symbol):
         )
 
         # -------------------------------------------------
-        # CANDLE BODY
+        # CANDLE
         # -------------------------------------------------
 
         open_price = _num(
@@ -312,79 +269,29 @@ def analyze_symbol(symbol):
         ) / open_price
 
         # =================================================
-        # HARD FILTERS
-        # =================================================
-
-        # ATR must be healthy
-        if not (
-            MIN_ATR_PERCENT
-            <= atr_pct
-            <= MAX_ATR_PERCENT
-        ):
-            return None
-
-        # BOTH timeframes must agree
-        if not htf_bull:
-            return None
-
-        if not ltf_bull:
-            return None
-
-        # RSI
-        if not (
-            RSI_MIN
-            <= r
-            <= RSI_MAX
-        ):
-            return None
-
-        # Momentum
-        if mom < MIN_MOMENTUM:
-            return None
-
-        # Trend strength
-        if ts < MIN_TREND_STRENGTH:
-            return None
-
-        # Volume
-        if vol_ratio < VOLUME_MULTIPLIER:
-            return None
-
-        # Avoid oversized candles
-        if candle_body > MAX_GREEN_CANDLE:
-            return None
-
-        # MACD must be positive
-        if hist_now <= 0:
-            return None
-
-        # ADX must show a real trend
-        if adx_now < 20:
-            return None
-
-        # =================================================
-        # QUALITY SCORE
+        # SCORE
+        #
+        # IMPORTANT:
+        # NO LONGER KILL THE SYMBOL WITH 8 HARD FILTERS.
+        # CONDITIONS ARE SCORED.
         # =================================================
 
         score = 0
-
         reasons = []
 
         # -------------------------------------------------
-        # HTF TREND
+        # HTF
         # -------------------------------------------------
 
         if htf_bull:
-
             score += 20
             reasons.append("HTF")
 
         # -------------------------------------------------
-        # LTF TREND
+        # LTF
         # -------------------------------------------------
 
         if ltf_bull:
-
             score += 20
             reasons.append("LTF")
 
@@ -397,10 +304,18 @@ def analyze_symbol(symbol):
             score += 15
             reasons.append("RSI+")
 
-        elif 52 <= r <= 68:
+        elif RSI_MIN <= r <= RSI_MAX:
 
             score += 10
             reasons.append("RSI")
+
+        elif 48 <= r < 55:
+
+            score += 5
+
+        elif 65 < r <= 72:
+
+            score += 5
 
         # -------------------------------------------------
         # MOMENTUM
@@ -416,7 +331,20 @@ def analyze_symbol(symbol):
             score += 10
             reasons.append("MOM")
 
-        else:
+        elif mom >= 0:
+
+            score += 5
+
+        # -------------------------------------------------
+        # TREND STRENGTH
+        # -------------------------------------------------
+
+        if ts >= MIN_TREND_STRENGTH:
+
+            score += 10
+            reasons.append("TREND")
+
+        elif ts >= MIN_TREND_STRENGTH * 0.75:
 
             score += 5
 
@@ -434,7 +362,7 @@ def analyze_symbol(symbol):
             score += 10
             reasons.append("ADX")
 
-        else:
+        elif adx_now >= 20:
 
             score += 5
 
@@ -446,6 +374,10 @@ def analyze_symbol(symbol):
 
             score += 10
             reasons.append("MACD")
+
+        elif hist_now > -abs(hist_now) * 0.25:
+
+            score += 3
 
         # -------------------------------------------------
         # VOLUME
@@ -461,6 +393,32 @@ def analyze_symbol(symbol):
             score += 7
             reasons.append("VOL")
 
+        elif vol_ratio >= 1.00:
+
+            score += 4
+
+        # -------------------------------------------------
+        # ATR
+        # -------------------------------------------------
+
+        atr_healthy = (
+            MIN_ATR_PERCENT
+            <= atr_pct
+            <= MAX_ATR_PERCENT
+        )
+
+        if atr_healthy:
+
+            score += 5
+            reasons.append("ATR")
+
+        elif (
+            atr_pct >= MIN_ATR_PERCENT * 0.70
+            and atr_pct <= MAX_ATR_PERCENT * 1.30
+        ):
+
+            score += 2
+
         # -------------------------------------------------
         # CANDLE QUALITY
         # -------------------------------------------------
@@ -470,13 +428,36 @@ def analyze_symbol(symbol):
             score += 5
             reasons.append("CANDLE")
 
+        elif candle_body <= MAX_GREEN_CANDLE:
+
+            score += 2
+
         # -------------------------------------------------
-        # LIMIT
+        # PENALTIES
         # -------------------------------------------------
 
-        score = min(
-            score,
-            100
+        # Extremely overextended RSI
+        if r > 75:
+            score -= 10
+
+        # Extremely weak momentum
+        if mom < MIN_MOMENTUM * 0.50:
+            score -= 8
+
+        # Negative MACD
+        if hist_now < 0:
+            score -= 5
+
+        # Very weak ADX
+        if adx_now < 18:
+            score -= 5
+
+        # Huge candle
+        if candle_body > MAX_GREEN_CANDLE:
+            score -= 8
+
+        score = int(
+            _clamp(score, 0, 100)
         )
 
         # =================================================
@@ -484,27 +465,26 @@ def analyze_symbol(symbol):
         # =================================================
 
         if score >= 95:
-
             quality = "A+"
 
         elif score >= 90:
-
             quality = "A"
 
         elif score >= 80:
-
             quality = "B"
 
-        else:
-
+        elif score >= 70:
             quality = "C"
+
+        else:
+            quality = "D"
 
         # =================================================
         # CONFIDENCE
         # =================================================
 
         confidence_points = 0
-        max_points = 7
+        max_points = 8
 
         if htf_bull:
             confidence_points += 1
@@ -518,13 +498,16 @@ def analyze_symbol(symbol):
         if mom >= 0.003:
             confidence_points += 1
 
-        if adx_now >= 25:
+        if adx_now >= 20:
             confidence_points += 1
 
         if hist_now > 0:
             confidence_points += 1
 
-        if vol_ratio >= 1.20:
+        if vol_ratio >= 1.00:
+            confidence_points += 1
+
+        if atr_healthy:
             confidence_points += 1
 
         confidence = round(
@@ -535,22 +518,23 @@ def analyze_symbol(symbol):
         # SIGNAL
         # =================================================
 
-        # IMPORTANT:
-        # BUY only for very strong setups.
+        # BUY:
+        # Keep this strict.
         #
-        # This is what gives us:
-        # "few but quality signals"
+        # We don't want to turn every WATCH into BUY.
 
-        if (
+        strong_buy = (
             score >= 90
-            and confidence >= 85
+            and confidence >= 75
             and htf_bull
             and ltf_bull
             and adx_now >= 20
             and hist_now > 0
-            and vol_ratio >= 1.15
             and mom >= 0.003
-        ):
+            and r < 70
+        )
+
+        if strong_buy:
 
             signal_type = "BUY"
 
@@ -629,9 +613,7 @@ def scan_market():
     signals = []
 
     checked = 0
-
     buy_count = 0
-
     watch_count = 0
 
     for symbol in SYMBOLS:
@@ -645,9 +627,7 @@ def scan_market():
         if result is None:
             continue
 
-        signals.append(
-            result
-        )
+        signals.append(result)
 
         if result["signal"] == "BUY":
 
