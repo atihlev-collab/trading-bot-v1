@@ -1,4 +1,4 @@
-mport math
+import math
 
 from config import (
     SYMBOLS,
