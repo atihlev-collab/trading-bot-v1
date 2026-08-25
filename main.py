@@ -6,6 +6,8 @@ import time
 
 from datetime import datetime, timezone
 
+from config import BUY_SCORE
+
 from market_data import get_candles
 from scanner import scan_market
 
@@ -57,11 +59,12 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
 
-log = logging.getLogger("TradingBotV5")
+log = logging.getLogger(
+    "TradingBotV5"
+)
 
 
 def sf(value, default=0.0):
-
     try:
         value = float(value)
 
@@ -331,6 +334,15 @@ def open_position(signal):
         "quality":
             signal["quality"],
 
+        "confirmations":
+            signal.get(
+                "confirmations",
+                0
+            ),
+
+        "quality_factor":
+            quality_factor,
+
         "atr":
             atr_value,
     }
@@ -499,6 +511,7 @@ def update_positions():
                 position["highest"]
             )
 
+            # Break-even protection
             if (
                 atr_value
                 and highest >= entry + atr_value
@@ -506,9 +519,11 @@ def update_positions():
 
                 stop = max(
                     stop,
-                    entry + atr_value * 0.10
+                    entry
+                    + atr_value * 0.10
                 )
 
+            # Trailing stop
             if (
                 atr_value
                 and highest >= entry + atr_value * 1.5
@@ -516,13 +531,15 @@ def update_positions():
 
                 stop = max(
                     stop,
-                    highest - atr_value * TRAIL_ATR
+                    highest
+                    - atr_value * TRAIL_ATR
                 )
 
             position["stop"] = stop
 
-            # Ако SL и TP са в една и съща свещ,
-            # приемаме SL първи.
+            # If SL and TP are hit
+            # in the same candle,
+            # SL is assumed first.
 
             if low <= stop:
 
@@ -655,7 +672,8 @@ def main():
     )
 
     log.info(
-        "BUY score threshold: 78"
+        "BUY score threshold: %s",
+        max(70, int(BUY_SCORE))
     )
 
     log.info(
@@ -684,22 +702,26 @@ def main():
             buys = [
                 x
                 for x in signals
-                if x["signal"] == "BUY"
+                if x.get("signal") == "BUY"
             ]
+
+            # Най-добрите BUY сигнали първи.
+            # Използваме get(), за да няма
+            # KeyError при стар сигнал/стара версия.
 
             buys.sort(
                 key=lambda x: (
-                    x["quality_factor"],
-                    x["score"],
-                    x["confidence"],
-                    x["confirmations"],
+                    x.get("quality_factor", 0.0),
+                    x.get("score", 0),
+                    x.get("confidence", 0),
+                    x.get("confirmations", 0),
                 ),
                 reverse=True,
             )
 
             for signal in buys:
 
-                if signal["quality"] in (
+                if signal.get("quality") in (
                     "A+",
                     "A",
                     "B",
