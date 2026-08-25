@@ -1,117 +1,732 @@
-import json, logging, math, os, time
+import json
+import logging
+import math
+import os
+import time
+
 from datetime import datetime, timezone
+
 from market_data import get_candles
 from scanner import scan_market
 
-START_BALANCE=float(os.getenv("START_BALANCE","100"))
-RISK_PER_TRADE=float(os.getenv("RISK_PER_TRADE","0.01"))
-MAX_POSITIONS=int(os.getenv("MAX_POSITIONS","3"))
-SCAN_SECONDS=int(os.getenv("SCAN_SECONDS","60"))
-SL_ATR=float(os.getenv("SL_ATR","1.5"))
-TP_ATR=float(os.getenv("TP_ATR","2.4"))
-TRAIL_ATR=float(os.getenv("TRAIL_ATR","1.2"))
-FEE_RATE=float(os.getenv("FEE_RATE","0.0004"))
-SLIPPAGE=float(os.getenv("SLIPPAGE","0.0002"))
-STATE_FILE=os.getenv("STATE_FILE","trading_state_v5.json")
 
-logging.basicConfig(level=logging.INFO,format="%(asctime)s | %(levelname)s | %(message)s")
-log=logging.getLogger("TradingBotV5")
+START_BALANCE = float(
+    os.getenv("START_BALANCE", "100")
+)
 
-def sf(x,d=0.0):
+RISK_PER_TRADE = float(
+    os.getenv("RISK_PER_TRADE", "0.01")
+)
+
+MAX_POSITIONS = int(
+    os.getenv("MAX_POSITIONS", "3")
+)
+
+SCAN_SECONDS = int(
+    os.getenv("SCAN_SECONDS", "60")
+)
+
+SL_ATR = float(
+    os.getenv("SL_ATR", "1.5")
+)
+
+TP_ATR = float(
+    os.getenv("TP_ATR", "2.4")
+)
+
+TRAIL_ATR = float(
+    os.getenv("TRAIL_ATR", "1.2")
+)
+
+FEE_RATE = float(
+    os.getenv("FEE_RATE", "0.0004")
+)
+
+SLIPPAGE = float(
+    os.getenv("SLIPPAGE", "0.0002")
+)
+
+STATE_FILE = os.getenv(
+    "STATE_FILE",
+    "trading_state_v5.json"
+)
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+)
+
+log = logging.getLogger("TradingBotV5")
+
+
+def sf(value, default=0.0):
+
     try:
-        x=float(x); return x if math.isfinite(x) else d
-    except: return d
+        value = float(value)
+
+        if math.isfinite(value):
+            return value
+
+        return default
+
+    except Exception:
+        return default
+
 
 def load():
+
     if os.path.exists(STATE_FILE):
+
         try:
-            with open(STATE_FILE,encoding="utf-8") as f: s=json.load(f)
-            s.setdefault("balance",START_BALANCE); s.setdefault("start_balance",START_BALANCE); s.setdefault("positions",{}); s.setdefault("trades",[]); return s
-        except Exception as e: log.warning("state load failed: %s",e)
-    return {"balance":START_BALANCE,"start_balance":START_BALANCE,"positions":{},"trades":[]}
-state=load()
+
+            with open(
+                STATE_FILE,
+                encoding="utf-8"
+            ) as f:
+
+                state = json.load(f)
+
+            state.setdefault(
+                "balance",
+                START_BALANCE
+            )
+
+            state.setdefault(
+                "start_balance",
+                START_BALANCE
+            )
+
+            state.setdefault(
+                "positions",
+                {}
+            )
+
+            state.setdefault(
+                "trades",
+                []
+            )
+
+            return state
+
+        except Exception as exc:
+
+            log.warning(
+                "state load failed: %s",
+                exc
+            )
+
+    return {
+        "balance": START_BALANCE,
+        "start_balance": START_BALANCE,
+        "positions": {},
+        "trades": [],
+    }
+
+
+state = load()
+
 
 def save():
-    tmp=STATE_FILE+".tmp"
-    with open(tmp,"w",encoding="utf-8") as f: json.dump(state,f,indent=2)
-    os.replace(tmp,STATE_FILE)
+
+    tmp_file = STATE_FILE + ".tmp"
+
+    with open(
+        tmp_file,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        json.dump(
+            state,
+            f,
+            indent=2
+        )
+
+    os.replace(
+        tmp_file,
+        STATE_FILE
+    )
+
 
 def pnl_open():
-    return sum((sf(p["last_price"])-sf(p["entry"]))*sf(p["qty"]) for p in state["positions"].values())
 
-def equity(): return sf(state["balance"])+pnl_open()
+    total = 0.0
+
+    for position in state["positions"].values():
+
+        total += (
+            (
+                sf(position["last_price"])
+                - sf(position["entry"])
+            )
+            * sf(position["qty"])
+        )
+
+    return total
+
+
+def equity():
+
+    return (
+        sf(state["balance"])
+        + pnl_open()
+    )
+
 
 def account():
-    print(f"BALANCE: {state['balance']:.2f} | EQUITY: {equity():.2f} | OPEN_PNL: {pnl_open():+.2f} | POSITIONS: {len(state['positions'])}")
 
-def size(entry,stop,qf):
-    risk=max(0,equity()*RISK_PER_TRADE); dist=abs(entry-stop)
-    if risk<=0 or dist<=0:return 0
-    qty=risk/dist*max(.35,min(1,qf))
-    return min(qty,max(0,state["balance"]*.95/entry))
+    print(
+        f"BALANCE: {state['balance']:.2f} "
+        f"| EQUITY: {equity():.2f} "
+        f"| OPEN_PNL: {pnl_open():+.2f} "
+        f"| POSITIONS: {len(state['positions'])}"
+    )
 
-def open_pos(s):
-    sym=s["symbol"]
-    if sym in state["positions"]: log.info("[SKIP] %s already has position",sym); return
-    if len(state["positions"])>=MAX_POSITIONS: return
-    entry=sf(s["close"])*(1+SLIPPAGE); a=sf(s["atr"])
-    if entry<=0 or a<=0:return
-    stop=entry-a*SL_ATR; target=entry+a*TP_ATR
-    qty=size(entry,stop,sf(s.get("quality_factor"),.7))
-    fee=entry*qty*FEE_RATE
-    if qty<=0 or entry*qty+fee>state["balance"]:return
-    state["balance"]-=fee
-    state["positions"][sym]={"symbol":sym,"entry":entry,"qty":qty,"stop":stop,"target":target,"highest":entry,"last_price":entry,"opened_at":datetime.now(timezone.utc).isoformat(),"score":s["score"],"confidence":s["confidence"],"quality":s["quality"],"atr":a}
+
+def position_size(
+    entry,
+    stop,
+    quality_factor
+):
+
+    risk = max(
+        0.0,
+        equity() * RISK_PER_TRADE
+    )
+
+    distance = abs(
+        entry - stop
+    )
+
+    if risk <= 0 or distance <= 0:
+        return 0.0
+
+    factor = max(
+        0.35,
+        min(1.0, quality_factor)
+    )
+
+    qty = (
+        risk
+        / distance
+        * factor
+    )
+
+    max_qty = (
+        state["balance"]
+        * 0.95
+        / entry
+    )
+
+    return min(
+        qty,
+        max(0.0, max_qty)
+    )
+
+
+def open_position(signal):
+
+    symbol = signal["symbol"]
+
+    if symbol in state["positions"]:
+
+        log.info(
+            "[SKIP] %s already has position",
+            symbol
+        )
+
+        return
+
+    if len(state["positions"]) >= MAX_POSITIONS:
+
+        log.info(
+            "[SKIP] Max positions reached"
+        )
+
+        return
+
+    entry = (
+        sf(signal["close"])
+        * (1 + SLIPPAGE)
+    )
+
+    atr_value = sf(
+        signal["atr"]
+    )
+
+    if entry <= 0 or atr_value <= 0:
+        return
+
+    stop = (
+        entry
+        - atr_value * SL_ATR
+    )
+
+    target = (
+        entry
+        + atr_value * TP_ATR
+    )
+
+    quality_factor = sf(
+        signal.get(
+            "quality_factor",
+            0.70
+        ),
+        0.70
+    )
+
+    qty = position_size(
+        entry,
+        stop,
+        quality_factor
+    )
+
+    fee = (
+        entry
+        * qty
+        * FEE_RATE
+    )
+
+    required = (
+        entry * qty
+        + fee
+    )
+
+    if (
+        qty <= 0
+        or required > state["balance"]
+    ):
+        return
+
+    state["balance"] -= fee
+
+    state["positions"][symbol] = {
+
+        "symbol": symbol,
+
+        "entry": entry,
+
+        "qty": qty,
+
+        "stop": stop,
+
+        "target": target,
+
+        "highest": entry,
+
+        "last_price": entry,
+
+        "opened_at":
+            datetime.now(
+                timezone.utc
+            ).isoformat(),
+
+        "score":
+            signal["score"],
+
+        "confidence":
+            signal["confidence"],
+
+        "quality":
+            signal["quality"],
+
+        "atr":
+            atr_value,
+    }
+
     save()
-    log.info("[OPEN] %s Entry=%.6f Qty=%.6f SL=%.6f TP=%.6f Risk=%.4f Score=%s Conf=%s Q=%s",sym,entry,qty,stop,target,(entry-stop)*qty,s["score"],s["confidence"],s["quality"])
 
-def close_pos(sym,price,reason):
-    p=state["positions"].get(sym)
-    if not p:return
-    exitp=sf(price)*(1-SLIPPAGE); qty=sf(p["qty"]); entry=sf(p["entry"])
-    net=(exitp-entry)*qty-exitp*qty*FEE_RATE
-    state["balance"]+=net
-    state["trades"].append({"symbol":sym,"entry":entry,"exit":exitp,"qty":qty,"pnl":net,"reason":reason,"opened_at":p.get("opened_at"),"closed_at":datetime.now(timezone.utc).isoformat()})
-    del state["positions"][sym]; save()
-    log.info("[CLOSE] %s Exit=%.6f PNL=%+.4f Reason=%s",sym,exitp,net,reason)
+    log.info(
+        "[OPEN] %s "
+        "Entry=%.6f "
+        "Qty=%.6f "
+        "SL=%.6f "
+        "TP=%.6f "
+        "Risk=%.4f "
+        "Score=%s "
+        "Conf=%s "
+        "Q=%s",
+        symbol,
+        entry,
+        qty,
+        stop,
+        target,
+        (entry - stop) * qty,
+        signal["score"],
+        signal["confidence"],
+        signal["quality"],
+    )
+
+
+def close_position(
+    symbol,
+    price,
+    reason
+):
+
+    position = state["positions"].get(
+        symbol
+    )
+
+    if not position:
+        return
+
+    exit_price = (
+        sf(price)
+        * (1 - SLIPPAGE)
+    )
+
+    qty = sf(
+        position["qty"]
+    )
+
+    entry = sf(
+        position["entry"]
+    )
+
+    net = (
+        (exit_price - entry) * qty
+        - exit_price
+        * qty
+        * FEE_RATE
+    )
+
+    state["balance"] += net
+
+    state["trades"].append({
+
+        "symbol": symbol,
+
+        "entry": entry,
+
+        "exit": exit_price,
+
+        "qty": qty,
+
+        "pnl": net,
+
+        "reason": reason,
+
+        "opened_at":
+            position.get(
+                "opened_at"
+            ),
+
+        "closed_at":
+            datetime.now(
+                timezone.utc
+            ).isoformat(),
+    })
+
+    del state["positions"][symbol]
+
+    save()
+
+    log.info(
+        "[CLOSE] %s "
+        "Exit=%.6f "
+        "PNL=%+.4f "
+        "Reason=%s",
+        symbol,
+        exit_price,
+        net,
+        reason,
+    )
+
 
 def update_positions():
-    for sym in list(state["positions"]):
-        p=state["positions"].get(sym)
+
+    for symbol in list(
+        state["positions"]
+    ):
+
+        position = state["positions"].get(
+            symbol
+        )
+
         try:
-            c=get_candles(sym,"1m")
-            if c is None or len(c)<3:continue
-            row=c.iloc[-1]; close=sf(row["close"]); high=sf(row["high"]); low=sf(row["low"])
-            p["last_price"]=close; p["highest"]=max(sf(p["highest"]),high)
-            entry=sf(p["entry"]); a=sf(p["atr"]); stop=sf(p["stop"]); target=sf(p["target"]); hi=sf(p["highest"])
-            if a and hi>=entry+a: stop=max(stop,entry+a*.1)
-            if a and hi>=entry+a*1.5: stop=max(stop,hi-a*TRAIL_ATR)
-            p["stop"]=stop
-            # If SL and TP occur in the same candle, assume SL first.
-            if low<=stop: close_pos(sym,stop,"SL")
-            elif high>=target: close_pos(sym,target,"TP")
-        except Exception as e: log.warning("[POSITION ERROR] %s: %s",sym,e)
+
+            candles = get_candles(
+                symbol,
+                "1m"
+            )
+
+            if (
+                candles is None
+                or len(candles) < 3
+            ):
+                continue
+
+            row = candles.iloc[-1]
+
+            close = sf(
+                row["close"]
+            )
+
+            high = sf(
+                row["high"]
+            )
+
+            low = sf(
+                row["low"]
+            )
+
+            position["last_price"] = close
+
+            position["highest"] = max(
+                sf(position["highest"]),
+                high
+            )
+
+            entry = sf(
+                position["entry"]
+            )
+
+            atr_value = sf(
+                position["atr"]
+            )
+
+            stop = sf(
+                position["stop"]
+            )
+
+            target = sf(
+                position["target"]
+            )
+
+            highest = sf(
+                position["highest"]
+            )
+
+            if (
+                atr_value
+                and highest >= entry + atr_value
+            ):
+
+                stop = max(
+                    stop,
+                    entry + atr_value * 0.10
+                )
+
+            if (
+                atr_value
+                and highest >= entry + atr_value * 1.5
+            ):
+
+                stop = max(
+                    stop,
+                    highest - atr_value * TRAIL_ATR
+                )
+
+            position["stop"] = stop
+
+            # Ако SL и TP са в една и съща свещ,
+            # приемаме SL първи.
+
+            if low <= stop:
+
+                close_position(
+                    symbol,
+                    stop,
+                    "SL"
+                )
+
+            elif high >= target:
+
+                close_position(
+                    symbol,
+                    target,
+                    "TP"
+                )
+
+        except Exception as exc:
+
+            log.warning(
+                "[POSITION ERROR] %s: %s",
+                symbol,
+                exc
+            )
+
     save()
 
+
 def stats():
-    t=state["trades"]; wins=sum(sf(x.get("pnl"))>0 for x in t); losses=len(t)-wins
-    gp=sum(sf(x.get("pnl")) for x in t if sf(x.get("pnl"))>0); gl=abs(sum(sf(x.get("pnl")) for x in t if sf(x.get("pnl"))<0))
-    pf=gp/gl if gl else (float("inf") if gp else 0); wr=wins/len(t)*100 if t else 0
-    print(f"TRADES: {len(t)} | WINS: {wins} | LOSSES: {losses} | WIN RATE: {wr:.1f}% | PROFIT FACTOR: {'INF' if math.isinf(pf) else f'{pf:.2f}'} | REALIZED P/L: {state['balance']-state['start_balance']:+.2f}")
+
+    trades = state["trades"]
+
+    wins = sum(
+        sf(t.get("pnl")) > 0
+        for t in trades
+    )
+
+    losses = (
+        len(trades)
+        - wins
+    )
+
+    gross_profit = sum(
+        sf(t.get("pnl"))
+        for t in trades
+        if sf(t.get("pnl")) > 0
+    )
+
+    gross_loss = abs(
+        sum(
+            sf(t.get("pnl"))
+            for t in trades
+            if sf(t.get("pnl")) < 0
+        )
+    )
+
+    if gross_loss:
+
+        profit_factor = (
+            gross_profit
+            / gross_loss
+        )
+
+    elif gross_profit:
+
+        profit_factor = float("inf")
+
+    else:
+
+        profit_factor = 0
+
+    win_rate = (
+        wins
+        / len(trades)
+        * 100
+        if trades
+        else 0
+    )
+
+    pf_text = (
+        "INF"
+        if math.isinf(profit_factor)
+        else f"{profit_factor:.2f}"
+    )
+
+    realized = (
+        state["balance"]
+        - state["start_balance"]
+    )
+
+    print(
+        f"TRADES: {len(trades)} "
+        f"| WINS: {wins} "
+        f"| LOSSES: {losses} "
+        f"| WIN RATE: {win_rate:.1f}% "
+        f"| PROFIT FACTOR: {pf_text} "
+        f"| REALIZED P/L: {realized:+.2f}"
+    )
+
 
 def main():
-    log.info("================================================================="); log.info("Trading Bot V5 Started"); log.info("=================================================================")
-    account(); log.info("Start balance: %.2f USDT",START_BALANCE); log.info("Risk/trade: %.1f%%",RISK_PER_TRADE*100); log.info("Max positions: %s",MAX_POSITIONS); log.info("BUY score threshold: 78"); log.info("================================================================="); log.info("=== LOOP START ===")
-    while True:
-        try:
-            update_positions(); account()
-            signals=scan_market(); log.info("scan_market returned %s signals",len(signals))
-            buys=[x for x in signals if x["signal"]=="BUY"]
-            buys.sort(key=lambda x:(x["quality_factor"],x["score"],x["confidence"],x["confirmations"]),reverse=True)
-            for s in buys:
-                if s["quality"] in ("A+","A","B"): open_pos(s)
-            account(); stats()
-        except Exception as e: log.exception("[LOOP ERROR] %s",e)
-        time.sleep(max(10,SCAN_SECONDS))
 
-if __name__=="__main__": main()
+    log.info(
+        "================================================================="
+    )
+
+    log.info(
+        "Trading Bot V5 Started"
+    )
+
+    log.info(
+        "================================================================="
+    )
+
+    account()
+
+    log.info(
+        "Start balance: %.2f USDT",
+        START_BALANCE
+    )
+
+    log.info(
+        "Risk/trade: %.1f%%",
+        RISK_PER_TRADE * 100
+    )
+
+    log.info(
+        "Max positions: %s",
+        MAX_POSITIONS
+    )
+
+    log.info(
+        "BUY score threshold: 78"
+    )
+
+    log.info(
+        "================================================================="
+    )
+
+    log.info(
+        "=== LOOP START ==="
+    )
+
+    while True:
+
+        try:
+
+            update_positions()
+
+            account()
+
+            signals = scan_market()
+
+            log.info(
+                "scan_market returned %s signals",
+                len(signals)
+            )
+
+            buys = [
+                x
+                for x in signals
+                if x["signal"] == "BUY"
+            ]
+
+            buys.sort(
+                key=lambda x: (
+                    x["quality_factor"],
+                    x["score"],
+                    x["confidence"],
+                    x["confirmations"],
+                ),
+                reverse=True,
+            )
+
+            for signal in buys:
+
+                if signal["quality"] in (
+                    "A+",
+                    "A",
+                    "B",
+                ):
+
+                    open_position(
+                        signal
+                    )
+
+            account()
+
+            stats()
+
+        except Exception as exc:
+
+            log.exception(
+                "[LOOP ERROR] %s",
+                exc
+            )
+
+        time.sleep(
+            max(
+                10,
+                SCAN_SECONDS
+            )
+        )
+
+
+if __name__ == "__main__":
+    main()
