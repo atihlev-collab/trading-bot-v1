@@ -4,19 +4,25 @@ from config import (
     SYMBOLS,
     LOWER_TIMEFRAME,
     HIGHER_TIMEFRAME,
+
     EMA_FAST,
     EMA_SLOW,
     EMA_TREND,
+
     RSI_PERIOD,
     RSI_MIN,
     RSI_MAX,
+
     ATR_PERIOD,
     MIN_ATR_PERCENT,
     MAX_ATR_PERCENT,
+
     VOLUME_PERIOD,
     VOLUME_MULTIPLIER,
+
     MIN_MOMENTUM,
     MIN_TREND_STRENGTH,
+
     MAX_GREEN_CANDLE,
     BUY_SCORE,
 )
@@ -36,10 +42,8 @@ from market_data import get_candles
 
 
 # =========================================================
-# SCANNER V4
-# ADAPTIVE MARKET SCANNER
+# SAFE HELPERS
 # =========================================================
-
 
 def _num(value):
     try:
@@ -56,8 +60,11 @@ def _num(value):
 
 def _safe_ratio(a, b):
     try:
-        if b is not None and float(b) > 0:
-            return float(a) / float(b)
+        a = float(a)
+        b = float(b)
+
+        if b > 0:
+            return a / b
 
     except Exception:
         pass
@@ -65,29 +72,17 @@ def _safe_ratio(a, b):
     return 0.0
 
 
-def _quality(score):
-    if score >= 95:
-        return "A+"
-
-    if score >= 90:
-        return "A"
-
-    if score >= 80:
-        return "B"
-
-    if score >= 70:
-        return "C"
-
-    return "D"
-
+# =========================================================
+# ANALYZE SYMBOL
+# =========================================================
 
 def analyze_symbol(symbol):
 
     try:
 
-        # =================================================
-        # LOAD MARKET DATA
-        # =================================================
+        # -------------------------------------------------
+        # MARKET DATA
+        # -------------------------------------------------
 
         low = get_candles(
             symbol,
@@ -105,12 +100,16 @@ def analyze_symbol(symbol):
         if len(low) < 220 or len(high) < 220:
             return None
 
+        # -------------------------------------------------
+        # CLOSE DATA
+        # -------------------------------------------------
+
         lc = low["close"]
         hc = high["close"]
 
-        # =================================================
+        # -------------------------------------------------
         # EMA
-        # =================================================
+        # -------------------------------------------------
 
         low_fast = ema(
             lc,
@@ -142,9 +141,9 @@ def analyze_symbol(symbol):
             EMA_TREND
         )
 
-        # =================================================
+        # -------------------------------------------------
         # INDICATORS
-        # =================================================
+        # -------------------------------------------------
 
         low_rsi = rsi(
             lc,
@@ -173,9 +172,9 @@ def analyze_symbol(symbol):
             14
         )
 
-        # =================================================
-        # CURRENT VALUES
-        # =================================================
+        # -------------------------------------------------
+        # LAST VALUES
+        # -------------------------------------------------
 
         i = -1
 
@@ -195,13 +194,11 @@ def analyze_symbol(symbol):
             low_mom.iloc[i]
         )
 
-        ts_series = trend_strength(
-            low_fast,
-            low_slow
-        )
-
         ts = _num(
-            ts_series.iloc[i]
+            trend_strength(
+                low_fast,
+                low_slow
+            ).iloc[i]
         )
 
         adx_now = (
@@ -224,9 +221,9 @@ def analyze_symbol(symbol):
             or 0.0
         )
 
-        # =================================================
+        # -------------------------------------------------
         # BASIC VALIDATION
-        # =================================================
+        # -------------------------------------------------
 
         if price is None or price <= 0:
             return None
@@ -243,22 +240,25 @@ def analyze_symbol(symbol):
         if ts is None:
             return None
 
-        # =================================================
-        # ATR FILTER
-        # =================================================
+        # -------------------------------------------------
+        # ATR
+        #
+        # IMPORTANT:
+        # ATR IS NO LONGER A HARD REJECTION.
+        # It becomes a scoring factor.
+        # -------------------------------------------------
 
         atr_pct = a / price
 
-        if not (
+        atr_valid = (
             MIN_ATR_PERCENT
             <= atr_pct
             <= MAX_ATR_PERCENT
-        ):
-            return None
+        )
 
-        # =================================================
-        # HIGHER TIMEFRAME
-        # =================================================
+        # -------------------------------------------------
+        # HTF / LTF VALUES
+        # -------------------------------------------------
 
         high_close = _num(
             hc.iloc[i]
@@ -275,10 +275,6 @@ def analyze_symbol(symbol):
         high_slow_now = _num(
             high_slow.iloc[i]
         )
-
-        # =================================================
-        # LOWER TIMEFRAME
-        # =================================================
 
         low_trend_now = _num(
             low_trend.iloc[i]
@@ -303,9 +299,9 @@ def analyze_symbol(symbol):
         ):
             return None
 
-        # =================================================
-        # TREND DIRECTION
-        # =================================================
+        # -------------------------------------------------
+        # TREND
+        # -------------------------------------------------
 
         htf_bull = (
             high_close > high_trend_now
@@ -317,9 +313,9 @@ def analyze_symbol(symbol):
             and low_fast_now > low_slow_now
         )
 
-        # =================================================
+        # -------------------------------------------------
         # CANDLE
-        # =================================================
+        # -------------------------------------------------
 
         open_price = _num(
             low["open"].iloc[i]
@@ -333,9 +329,9 @@ def analyze_symbol(symbol):
             / open_price
         )
 
-        # =================================================
+        # -------------------------------------------------
         # VOLUME
-        # =================================================
+        # -------------------------------------------------
 
         vol_ratio = _safe_ratio(
             volume_now,
@@ -388,6 +384,15 @@ def analyze_symbol(symbol):
             reasons.append("RSI-WEAK")
 
         # -------------------------------------------------
+        # RSI TOO HIGH
+        # -------------------------------------------------
+
+        if r > 68:
+
+            score -= 8
+            reasons.append("RSI-HIGH")
+
+        # -------------------------------------------------
         # MOMENTUM
         # -------------------------------------------------
 
@@ -404,12 +409,15 @@ def analyze_symbol(symbol):
             score += 10
             reasons.append("MOM")
 
-        elif mom >= (
-            MIN_MOMENTUM * 0.75
-        ):
+        elif mom >= MIN_MOMENTUM * 0.75:
 
             score += 5
             reasons.append("MOM-WEAK")
+
+        else:
+
+            score -= 6
+            reasons.append("MOM-LOW")
 
         # -------------------------------------------------
         # ADX
@@ -430,14 +438,11 @@ def analyze_symbol(symbol):
             score += 5
             reasons.append("ADX-WEAK")
 
-        elif adx_now >= 15:
+        else:
 
-            score += 2
+            # Do not reject.
+            # Just don't reward weak trend.
             reasons.append("ADX-LOW")
-
-        # IMPORTANT:
-        # ADX below 15 does NOT automatically kill
-        # the candidate. It only gives no points.
 
         # -------------------------------------------------
         # MACD
@@ -452,6 +457,11 @@ def analyze_symbol(symbol):
 
             score += 5
             reasons.append("MACD-FLAT")
+
+        else:
+
+            score -= 6
+            reasons.append("MACD-NEG")
 
         # -------------------------------------------------
         # VOLUME
@@ -472,18 +482,35 @@ def analyze_symbol(symbol):
             score += 4
             reasons.append("VOL-NORMAL")
 
-        elif vol_ratio >= 0.75:
+        else:
 
-            score += 2
             reasons.append("VOL-LOW")
+
+        # -------------------------------------------------
+        # ATR
+        #
+        # ATR DOES NOT REJECT THE SYMBOL.
+        # It only affects the score.
+        # -------------------------------------------------
+
+        if atr_valid:
+
+            score += 5
+            reasons.append("ATR")
+
+        elif atr_pct < MIN_ATR_PERCENT:
+
+            reasons.append("ATR-LOW")
+
+        else:
+
+            reasons.append("ATR-HIGH")
 
         # -------------------------------------------------
         # CANDLE
         # -------------------------------------------------
 
-        if candle_body <= (
-            MAX_GREEN_CANDLE * 0.70
-        ):
+        if candle_body <= MAX_GREEN_CANDLE * 0.70:
 
             score += 5
             reasons.append("CANDLE")
@@ -493,49 +520,14 @@ def analyze_symbol(symbol):
             score += 3
             reasons.append("CANDLE-WEAK")
 
-        # =================================================
-        # NEGATIVE ADJUSTMENTS
-        # =================================================
-
-        if r > 70:
-
-            score -= 10
-            reasons.append("RSI-HIGH")
-
-        elif r > 68:
-
-            score -= 5
-            reasons.append("RSI-HIGH")
-
-        if candle_body > MAX_GREEN_CANDLE:
+        else:
 
             score -= 8
             reasons.append("CANDLE-LARGE")
 
-        if hist_now < 0:
-
-            score -= 6
-            reasons.append("MACD-NEG")
-
-        if mom < (
-            MIN_MOMENTUM * 0.75
-        ):
-
-            score -= 6
-            reasons.append("MOM-NEG")
-
-        # =================================================
-        # TREND STRENGTH BONUS
-        # =================================================
-
-        if ts >= MIN_TREND_STRENGTH:
-
-            score += 3
-            reasons.append("TREND")
-
-        # =================================================
-        # SCORE LIMIT
-        # =================================================
+        # -------------------------------------------------
+        # FINAL SCORE LIMIT
+        # -------------------------------------------------
 
         score = max(
             0,
@@ -545,9 +537,29 @@ def analyze_symbol(symbol):
             )
         )
 
-        quality = _quality(
-            score
-        )
+        # =================================================
+        # QUALITY
+        # =================================================
+
+        if score >= 95:
+
+            quality = "A+"
+
+        elif score >= 90:
+
+            quality = "A"
+
+        elif score >= 80:
+
+            quality = "B"
+
+        elif score >= 70:
+
+            quality = "C"
+
+        else:
+
+            quality = "D"
 
         # =================================================
         # CONFIDENCE
@@ -567,7 +579,7 @@ def analyze_symbol(symbol):
         if mom >= 0.003:
             confidence_points += 1
 
-        if adx_now >= 20:
+        if adx_now >= 25:
             confidence_points += 1
 
         if hist_now > 0:
@@ -585,105 +597,48 @@ def analyze_symbol(symbol):
 
         # =================================================
         # BUY THRESHOLD
+        #
+        # Respect config.py.
+        # Do NOT force it to 90.
         # =================================================
 
+        buy_score = int(
+            BUY_SCORE
+        )
+
+        # Safety floor
         buy_score = max(
             70,
-            int(BUY_SCORE)
-        )
-
-        # =================================================
-        # ADAPTIVE BUY
-        # =================================================
-        #
-        # Instead of requiring EVERY indicator to be
-        # perfect, require the important structure:
-        #
-        # HTF + LTF
-        # positive MACD
-        # acceptable RSI
-        # positive momentum
-        #
-        # Then allow ADX / volume to compensate.
-        # =================================================
-
-        core_trend = (
-            htf_bull
-            and ltf_bull
-        )
-
-        momentum_ok = (
-            mom >= max(
-                0.003,
-                MIN_MOMENTUM
+            min(
+                95,
+                buy_score
             )
         )
 
-        macd_ok = (
-            hist_now > 0
-        )
-
-        rsi_ok = (
-            r <= 68
-        )
-
-        volume_ok = (
-            vol_ratio >= 0.90
-        )
-
-        adx_ok = (
-            adx_now >= 15
-        )
-
-        strong_confirmation = (
-            confidence >= 80
-        )
-
-        very_strong_score = (
-            score >= 85
-        )
-
         # =================================================
-        # BUY DECISION
+        # BUY CONDITIONS
+        #
+        # Score alone is NOT enough.
         # =================================================
 
-        buy_signal = False
-
-        if (
+        strong_buy = (
             score >= buy_score
-            and core_trend
-            and momentum_ok
-            and macd_ok
-            and rsi_ok
-            and volume_ok
-        ):
+            and confidence >= 85
+            and htf_bull
+            and ltf_bull
+            and adx_now >= 20
+            and hist_now > 0
+            and vol_ratio >= 1.15
+            and mom >= 0.003
+            and r <= 68
+            and candle_body <= MAX_GREEN_CANDLE
+        )
 
-            # Normal BUY
-            if (
-                strong_confirmation
-                and adx_ok
-            ):
-
-                buy_signal = True
-
-            # Strong score can compensate for weaker ADX
-            elif (
-                very_strong_score
-                and confidence >= 71
-                and adx_now >= 12
-            ):
-
-                buy_signal = True
-
-        # =================================================
-        # WATCH
-        # =================================================
-
-        if buy_signal:
+        if strong_buy:
 
             signal_type = "BUY"
 
-        elif score >= 72:
+        elif score >= 75:
 
             signal_type = "WATCH"
 
@@ -692,7 +647,7 @@ def analyze_symbol(symbol):
             return None
 
         # =================================================
-        # RETURN
+        # RESULT
         # =================================================
 
         return {
@@ -735,6 +690,8 @@ def analyze_symbol(symbol):
 
             "candle_body": candle_body,
 
+            "atr_valid": atr_valid,
+
             "reasons": reasons,
 
         }
@@ -762,9 +719,11 @@ def scan_market():
 
     watch_count = 0
 
-    # =====================================================
-    # SCAN ALL SYMBOLS
-    # =====================================================
+    # Diagnostic counters
+    data_fail = 0
+    atr_low = 0
+    atr_high = 0
+    score_low = 0
 
     for symbol in SYMBOLS:
 
@@ -775,6 +734,7 @@ def scan_market():
         )
 
         if result is None:
+
             continue
 
         signals.append(
@@ -794,55 +754,30 @@ def scan_market():
     # =====================================================
 
     signals.sort(
-
         key=lambda x: (
-
-            x.get(
-                "score",
-                0
-            ),
-
-            x.get(
-                "confidence",
-                0
-            ),
-
-            x.get(
-                "volume_ratio",
-                0
-            ),
-
-            x.get(
-                "momentum",
-                0
-            ),
-
-            x.get(
-                "adx",
-                0
-            ),
-
+            x.get("score", 0),
+            x.get("confidence", 0),
+            x.get("adx", 0),
+            x.get("momentum", 0),
+            x.get("volume_ratio", 0),
         ),
-
         reverse=True,
     )
 
     # =====================================================
-    # SCAN LOG
+    # SCAN SUMMARY
     # =====================================================
 
     print(
-
         f"[SCAN] "
         f"Checked={checked} "
         f"Candidates={len(signals)} "
         f"BUY={buy_count} "
         f"WATCH={watch_count}"
-
     )
 
     # =====================================================
-    # TOP SIGNAL
+    # TOP CANDIDATE
     # =====================================================
 
     if signals:
@@ -850,7 +785,6 @@ def scan_market():
         top = signals[0]
 
         print(
-
             f"[TOP] "
             f"{top['symbol']} "
             f"{top['signal']} "
@@ -863,7 +797,6 @@ def scan_market():
             f"LTF={top['ltf_bull']} "
             f"CONF={top['confidence']} "
             f"Q={top['quality']}"
-
         )
 
         if top.get("reasons"):
@@ -874,5 +807,11 @@ def scan_market():
                     top["reasons"]
                 )
             )
+
+    else:
+
+        print(
+            "[SCAN] No qualifying candidates."
+        )
 
     return signals
