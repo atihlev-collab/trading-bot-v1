@@ -315,7 +315,6 @@ def analyze_symbol(symbol):
             and confidence >= 71
             and confirmations >= 6
             and strong_trend
-            and adx_now >= 18
             and macd_now > 0
             and 48 <= rsi_now <= 67
         ):
