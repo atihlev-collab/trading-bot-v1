@@ -125,9 +125,7 @@ def analyze_symbol(symbol):
             return None
 
         # =========================================================
-        # ATR
-        #
-        # ATR is a hard market-quality filter only.
+        # ATR MARKET QUALITY
         # =========================================================
 
         atr_pct = a / price
@@ -181,7 +179,7 @@ def analyze_symbol(symbol):
             return None
 
         # =========================================================
-        # HTF / LTF TREND
+        # TREND
         # =========================================================
 
         htf_bull = (
@@ -230,6 +228,10 @@ def analyze_symbol(symbol):
             score += 20
             reasons.append("HTF")
 
+        elif high_close > high_trend_now:
+            score += 10
+            reasons.append("HTF-WEAK")
+
         # ---------------------------------------------------------
         # LTF
         # ---------------------------------------------------------
@@ -238,23 +240,27 @@ def analyze_symbol(symbol):
             score += 20
             reasons.append("LTF")
 
+        elif price > low_trend_now:
+            score += 10
+            reasons.append("LTF-WEAK")
+
         # ---------------------------------------------------------
         # RSI
         # ---------------------------------------------------------
 
-        if 55 <= r <= 65:
+        if 52 <= r <= 64:
             score += 15
             reasons.append("RSI+")
 
-        elif RSI_MIN <= r <= RSI_MAX:
+        elif 48 <= r <= 68:
             score += 10
             reasons.append("RSI")
 
-        elif 45 <= r < RSI_MIN:
-            score += 5
+        elif 44 <= r < 48:
+            score += 4
             reasons.append("RSI-WEAK")
 
-        elif r < 45:
+        else:
             reasons.append("RSI-LOW")
 
         # ---------------------------------------------------------
@@ -272,7 +278,7 @@ def analyze_symbol(symbol):
             score += 10
             reasons.append("MOM")
 
-        elif mom >= MIN_MOMENTUM * 0.75:
+        elif mom >= MIN_MOMENTUM * 0.70:
             score += 5
             reasons.append("MOM-WEAK")
 
@@ -281,9 +287,6 @@ def analyze_symbol(symbol):
 
         # ---------------------------------------------------------
         # ADX
-        #
-        # IMPORTANT:
-        # ADX is NOT a hard filter anymore.
         # ---------------------------------------------------------
 
         if adx_now >= 30:
@@ -295,11 +298,11 @@ def analyze_symbol(symbol):
             reasons.append("ADX")
 
         elif adx_now >= 20:
-            score += 5
+            score += 6
             reasons.append("ADX-WEAK")
 
         elif adx_now >= 15:
-            score += 2
+            score += 3
             reasons.append("ADX-LOW")
 
         else:
@@ -363,18 +366,18 @@ def analyze_symbol(symbol):
         # =========================================================
 
         if r > 68:
-            score -= 8
+            score -= 10
             reasons.append("RSI-HIGH")
 
         if candle_body > MAX_GREEN_CANDLE:
-            score -= 8
+            score -= 10
             reasons.append("CANDLE-LARGE")
 
         if hist_now < 0:
-            score -= 6
+            score -= 7
 
-        if mom < MIN_MOMENTUM * 0.75:
-            score -= 6
+        if mom < MIN_MOMENTUM * 0.70:
+            score -= 7
 
         score = max(
             0,
@@ -385,26 +388,7 @@ def analyze_symbol(symbol):
         )
 
         # =========================================================
-        # QUALITY
-        # =========================================================
-
-        if score >= 95:
-            quality = "A+"
-
-        elif score >= 90:
-            quality = "A"
-
-        elif score >= 80:
-            quality = "B"
-
-        elif score >= 70:
-            quality = "C"
-
-        else:
-            quality = "D"
-
-        # =========================================================
-        # CONFIDENCE
+        # CONFIRMATIONS
         # =========================================================
 
         confirmation = 0
@@ -415,29 +399,53 @@ def analyze_symbol(symbol):
         if ltf_bull:
             confirmation += 1
 
-        if 52 <= r <= 68:
+        if 50 <= r <= 67:
             confirmation += 1
 
-        if mom >= 0.003:
+        if mom >= 0.0025:
             confirmation += 1
 
-        if adx_now >= 20:
+        if adx_now >= 18:
             confirmation += 1
 
         if hist_now > 0:
             confirmation += 1
 
-        if vol_ratio >= 1.20:
+        if vol_ratio >= 0.95:
             confirmation += 1
+
+        # =========================================================
+        # CONFIDENCE
+        # =========================================================
 
         confidence = round(
             (confirmation / 7) * 100
         )
 
         # =========================================================
+        # QUALITY
+        # =========================================================
+
+        if score >= 92 and confidence >= 85:
+            quality = "A+"
+
+        elif score >= 86 and confidence >= 71:
+            quality = "A"
+
+        elif score >= 78:
+            quality = "B"
+
+        elif score >= 70:
+            quality = "C"
+
+        else:
+            quality = "D"
+
+        # =========================================================
         # BUY
         #
-        # BUY remains strict.
+        # Strict enough to protect against weak trades,
+        # but not requiring every indicator to be perfect.
         # =========================================================
 
         buy_score = max(
@@ -447,11 +455,11 @@ def analyze_symbol(symbol):
 
         strong_buy = (
             score >= buy_score
-            and confidence >= 85
+            and confidence >= 71
             and htf_bull
             and ltf_bull
-            and hist_now > 0
-            and mom >= 0.003
+            and confirmation >= 5
+            and mom >= 0.0025
             and r <= 68
             and candle_body <= MAX_GREEN_CANDLE
         )
@@ -462,16 +470,30 @@ def analyze_symbol(symbol):
         # =========================================================
         # WATCH
         #
-        # WATCH is intentionally broader.
-        # This prevents the scanner from returning 0
-        # candidates simply because ADX is low.
+        # Keep weaker but potentially developing setups.
         # =========================================================
 
-        elif score >= 75:
+        elif (
+            score >= 68
+            and confidence >= 57
+            and confirmation >= 4
+        ):
             signal_type = "WATCH"
 
         else:
             return None
+
+        # =========================================================
+        # QUALITY FACTOR
+        # =========================================================
+
+        qfactor = {
+            "A+": 1.00,
+            "A": 0.90,
+            "B": 0.70,
+            "C": 0.40,
+            "D": 0.20,
+        }[quality]
 
         # =========================================================
         # RESULT
@@ -484,6 +506,7 @@ def analyze_symbol(symbol):
             "score": score,
             "confidence": confidence,
             "quality": quality,
+            "quality_factor": qfactor,
 
             "confirmation": confirmation,
 
@@ -547,6 +570,7 @@ def scan_market():
 
     signals.sort(
         key=lambda x: (
+            x.get("signal") == "BUY",
             x.get("score", 0),
             x.get("confidence", 0),
             x.get("confirmation", 0),
@@ -591,5 +615,10 @@ def scan_market():
                 "[REASONS] "
                 + ", ".join(top["reasons"])
             )
+
+    else:
+        print(
+            "[TOP] No qualifying signals"
+        )
 
     return signals
