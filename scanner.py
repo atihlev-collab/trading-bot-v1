@@ -336,10 +336,8 @@ def analyze_symbol(symbol):
             and RSI_MIN <= r <= RSI_MAX
             and mom >= MIN_MOMENTUM
             and ts >= MIN_TREND_STRENGTH
-            and vol_ratio >= VOLUME_MULTIPLIER
             and hist_now > 0
             and adx_now >= 20
-            and candle_body > 0
             and candle_body <= MAX_GREEN_CANDLE
         )
 
