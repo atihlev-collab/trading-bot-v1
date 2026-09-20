@@ -302,13 +302,17 @@ class PaperTrader:
         # DAILY LOSS LIMIT
         # ======================================
 
+        # Daily loss limit is loss-only.
+        # Profitable trades must never trigger this guard.
         if (
-            self.daily_loss
-            >= self.max_daily_loss
+            self.daily_loss > 0
+            and self.daily_loss >= self.max_daily_loss
         ):
 
             print(
-                "[FAIL] Daily loss limit reached"
+                "[FAIL] Daily loss limit reached "
+                f"({self.daily_loss:.2f}/"
+                f"{self.max_daily_loss:.2f} USDT)"
             )
 
             return False
