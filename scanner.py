@@ -133,8 +133,8 @@ def analyze_symbol(symbol):
         if len(low) < 220 or len(high) < 220:
             return None
 
-        l = low.iloc[-1]
-        h = high.iloc[-1]
+        l = low.iloc[-2]
+        h = high.iloc[-2]
 
         price = _safe_float(l["close"])
 
@@ -351,6 +351,23 @@ def analyze_symbol(symbol):
         watch = (
             score >= WATCH_SCORE
             and confirmations >= 5
+        )
+
+        # ======================================
+        # BUY DEBUG
+        # ======================================
+        print(
+            f"[BUY DEBUG] {symbol} | "
+            f"score={score}>={BUY_SCORE} "
+            f"conf={confidence}>=75 "
+            f"confirm={confirmations}>=7 "
+            f"HTF={htf_bull} LTF={ltf_bull} "
+            f"MOM={mom:.4f}>={MIN_MOMENTUM} "
+            f"TREND={ts:.4f}>={MIN_TREND_STRENGTH} "
+            f"MACD={hist_now > 0} ADX={adx_now:.1f}>=20 "
+            f"CANDLE={candle_body:.4f}<={MAX_GREEN_CANDLE} "
+            f"FINAL_BUY={buy}",
+            flush=True,
         )
 
         if buy:
