@@ -331,18 +331,60 @@ def analyze_symbol(symbol):
         # RSI and volume remain score/confirmation factors, but are not
         # repeated as mandatory hard gates. A 7/9 setup with strong HTF/LTF,
         # momentum, trend, ADX and MACD is allowed to enter.
-        buy = (
-            score >= BUY_SCORE
-            and confidence >= 75
-            and confirmations >= 7
-            and htf_bull
-            and ltf_bull
-            and mom >= MIN_MOMENTUM
-            and ts >= MIN_TREND_STRENGTH
-            and hist_now > 0
-            and adx_now >= 20
-            and candle_body <= MAX_GREEN_CANDLE
-        )
+        buy_checks = {
+            # Score must be genuinely strong. Keep the user's configured
+            # threshold, but never allow a BUY below 90.
+            "score": score >= max(int(BUY_SCORE), 90),
+
+            # Require at least 8 of 9 confirmations.
+            "confidence": confidence >= 85,
+            "confirmations": confirmations >= max(int(MIN_BUY_CONFIRMATIONS), 8),
+
+            # Trend direction.
+            "htf": htf_bull,
+            "ltf": ltf_bull,
+
+            # Do not buy an already overextended RSI.
+            "rsi": RSI_MIN <= r <= min(RSI_MAX, 63),
+
+            # Require meaningful momentum and trend strength.
+            "momentum": mom >= MIN_MOMENTUM,
+            "trend": ts >= MIN_TREND_STRENGTH,
+
+            # Positive MACD + directional strength.
+            "macd": hist_now > 0,
+            "adx": adx_now >= 20,
+
+            # Entry candle must be green and not oversized.
+            "candle": 0 < candle_body <= MAX_GREEN_CANDLE,
+
+            # Volume must confirm the move.
+            "volume": vol_ratio >= VOLUME_MULTIPLIER,
+        }
+
+        buy = all(buy_checks.values())
+
+        # Debug only near the BUY area, so the log remains useful.
+        if score >= max(int(BUY_SCORE) - 5, 85) or confirmations >= 7:
+            failed = [
+                name for name, ok in buy_checks.items()
+                if not ok
+            ]
+            print(
+                f"[BUY DEBUG] {symbol} | "
+                f"score={score}>={max(int(BUY_SCORE), 90)} "
+                f"conf={confidence}>=85 "
+                f"confirm={confirmations}>=8 "
+                f"RSI={r:.1f} "
+                f"VOL={vol_ratio:.2f}>={VOLUME_MULTIPLIER} "
+                f"MOM={mom:.4f}>={MIN_MOMENTUM} "
+                f"TREND={ts:.4f}>={MIN_TREND_STRENGTH} "
+                f"ADX={adx_now:.1f} "
+                f"CANDLE={candle_body:.4f} "
+                f"FAILED={','.join(failed) or 'NONE'} "
+                f"FINAL_BUY={buy}",
+                flush=True,
+            )
 
         # ======================================
         # WATCH
@@ -351,23 +393,6 @@ def analyze_symbol(symbol):
         watch = (
             score >= WATCH_SCORE
             and confirmations >= 5
-        )
-
-        # ======================================
-        # BUY DEBUG
-        # ======================================
-        print(
-            f"[BUY DEBUG] {symbol} | "
-            f"score={score}>={BUY_SCORE} "
-            f"conf={confidence}>=75 "
-            f"confirm={confirmations}>=7 "
-            f"HTF={htf_bull} LTF={ltf_bull} "
-            f"MOM={mom:.4f}>={MIN_MOMENTUM} "
-            f"TREND={ts:.4f}>={MIN_TREND_STRENGTH} "
-            f"MACD={hist_now > 0} ADX={adx_now:.1f}>=20 "
-            f"CANDLE={candle_body:.4f}<={MAX_GREEN_CANDLE} "
-            f"FINAL_BUY={buy}",
-            flush=True,
         )
 
         if buy:
