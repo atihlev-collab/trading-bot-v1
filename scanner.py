@@ -1,546 +1,984 @@
-#===========================================
-# Trading Bot V5 - SCANNER
-# ==========================================
-
-import numpy as np
+from datetime import datetime, timezone
 
 from config import (
-    SYMBOLS,
-    LOWER_TIMEFRAME,
-    HIGHER_TIMEFRAME,
-    RSI_MIN,
-    RSI_MAX,
-    RSI_HARD_MAX,
-    MIN_ATR_PERCENT,
-    MAX_ATR_PERCENT,
-    VOLUME_MULTIPLIER,
-    STRONG_VOLUME_RATIO,
-    MIN_MOMENTUM,
-    STRONG_MOMENTUM,
-    MIN_TREND_STRENGTH,
-    STRONG_TREND_STRENGTH,
-    MAX_GREEN_CANDLE,
-    MAX_ENTRY_CANDLE,
-    BUY_SCORE,
-    WATCH_SCORE,
-    IGNORE_SCORE,
-    MIN_BUY_CONFIRMATIONS,
+    START_BALANCE,
+    RISK_PER_TRADE,
+    MAX_POSITION_PCT,
+    MAX_OPEN_POSITIONS,
+    DAILY_LOSS_LIMIT,
+    ATR_STOP_MULT,
+    REWARD_RISK,
+    BREAK_EVEN_AT,
+    TRAILING_STOP,
+    TRAILING_AT_R,
+    TRAILING_ATR,
+    FEE_RATE,
+    SLIPPAGE_RATE,
 )
 
-from market_data import get_multi_tf
-from indicators import (
-    ema,
-    rsi,
-    atr,
-    momentum,
-    volume_ma,
-    trend_strength,
-    macd,
-    adx,
-)
+from market_data import get_price
 
 
-# ==========================================
-# HELPERS
-# ==========================================
+class PaperTrader:
 
-def _safe_float(value, default=0.0):
-    try:
-        value = float(value)
-        if np.isfinite(value):
-            return value
-    except Exception:
-        pass
+    # ==========================================
+    # INIT
+    # ==========================================
 
-    return default
+    def __init__(self):
 
+        self.start_balance = float(START_BALANCE)
 
-def _quality(score):
-    if score >= 95:
-        return "A+"
-    if score >= 90:
-        return "A"
-    if score >= 82:
-        return "B"
-    if score >= 72:
-        return "C"
-    return "D"
+        # Free cash
+        self.balance = float(START_BALANCE)
 
+        # Open positions
+        self.positions = {}
 
-# ==========================================
-# PREPARE DATA
-# ==========================================
+        # Closed trades
+        self.closed_trades = []
 
-def _prepare(df):
-    df = df.copy()
+        # P/L
+        self.realized_pnl = 0.0
+        self.open_pnl = 0.0
 
-    if len(df) < 220:
-        return None
+        # Statistics
+        self.total_trades = 0
+        self.wins = 0
+        self.losses = 0
 
-    df["ema20"] = ema(df["close"], 20)
-    df["ema50"] = ema(df["close"], 50)
-    df["ema200"] = ema(df["close"], 200)
+        # Risk
+        self.risk_percent = RISK_PER_TRADE * 100
+        self.max_position_pct = MAX_POSITION_PCT
+        self.max_open_positions = MAX_OPEN_POSITIONS
 
-    df["rsi"] = rsi(df["close"], 14)
+        # Daily loss
+        self.max_daily_loss = (
+            self.start_balance * DAILY_LOSS_LIMIT
+        )
 
-    df["atr"] = atr(df, 14)
+        self.daily_loss = 0.0
 
-    df["momentum"] = momentum(df["close"], 5)
+        self.daily_date = (
+            datetime.now(timezone.utc).date()
+        )
 
-    df["volume_ma"] = volume_ma(df["volume"], 20)
+    # ==========================================
+    # DAILY RESET
+    # ==========================================
 
-    df["volume_ratio"] = (
-        df["volume"]
-        / df["volume_ma"].replace(0, np.nan)
-    )
+    def _reset_day(self):
 
-    df["trend_strength"] = trend_strength(
-        df["ema20"],
-        df["ema50"],
-    )
+        today = datetime.now(timezone.utc).date()
 
-    _, _, df["macd_hist"] = macd(df["close"])
+        if today != self.daily_date:
 
-    df["adx"] = adx(df, 14)
+            self.daily_date = today
+            self.daily_loss = 0.0
 
-    df["atr_pct"] = (
-        df["atr"]
-        / df["close"].replace(0, np.nan)
-    )
+    # ==========================================
+    # POSITION CHECK
+    # ==========================================
 
-    df["candle_body"] = (
-        (df["close"] - df["open"])
-        / df["open"].replace(0, np.nan)
-    )
+    def has_position(self, symbol):
 
-    return df
+        return symbol in self.positions
 
+    # ==========================================
+    # FREE SLOTS
+    # ==========================================
 
-# ==========================================
-# ANALYZE SYMBOL
-# ==========================================
+    def free_slots(self):
 
-def analyze_symbol(symbol):
-    try:
-        data = get_multi_tf(symbol)
+        return max(
+            0,
+            self.max_open_positions
+            - len(self.positions),
+        )
 
-        low = _prepare(data[LOWER_TIMEFRAME])
-        high = _prepare(data[HIGHER_TIMEFRAME])
+    # ==========================================
+    # OPEN POSITION MARKET VALUE
+    # ==========================================
 
-        if low is None or high is None:
-            return None
+    def _position_market_value(self):
 
-        if len(low) < 220 or len(high) < 220:
-            return None
+        total = 0.0
 
-        l = low.iloc[-2]
-        h = high.iloc[-2]
+        for symbol, pos in self.positions.items():
 
-        price = _safe_float(l["close"])
+            price = pos.get(
+                "last_price",
+                pos["entry"],
+            )
 
-        if price <= 0:
-            return None
+            quantity = pos["quantity"]
 
-        atr_now = _safe_float(l["atr"])
-        atr_pct = _safe_float(l["atr_pct"])
+            total += price * quantity
 
-        r = _safe_float(l["rsi"])
-        mom = _safe_float(l["momentum"])
-        vol_ratio = _safe_float(l["volume_ratio"])
+        return total
 
-        ts = _safe_float(l["trend_strength"])
-        adx_now = _safe_float(l["adx"])
-        hist_now = _safe_float(l["macd_hist"])
+    # ==========================================
+    # EQUITY
+    # ==========================================
 
-        candle_body = _safe_float(l["candle_body"])
+    def equity(self):
 
-        # ======================================
-        # HARD FILTERS
-        # ======================================
+        """
+        Total account value:
 
-        # Невалидна волатилност.
-        if not (
-            MIN_ATR_PERCENT
-            <= atr_pct
-            <= MAX_ATR_PERCENT
+        Free cash
+        +
+        current market value of open positions
+
+        This is the important correction.
+
+        The money used to open a position is
+        not treated as a loss. It is simply
+        moved from cash into the position.
+        """
+
+        return (
+            self.balance
+            + self._position_market_value()
+        )
+
+    # ==========================================
+    # MARK OPEN P/L
+    # ==========================================
+
+    def _mark_open_pnl(self):
+
+        total = 0.0
+
+        for symbol, pos in self.positions.items():
+
+            try:
+
+                px = get_price(symbol)
+
+            except Exception:
+
+                px = pos["last_price"]
+
+            px = float(px)
+
+            pos["last_price"] = px
+
+            entry = pos["entry"]
+            quantity = pos["quantity"]
+
+            # Unrealized gross P/L
+            gross_pnl = (
+                px - entry
+            ) * quantity
+
+            # Estimated exit fee
+            estimated_exit_fee = (
+                px
+                * quantity
+                * FEE_RATE
+            )
+
+            # Entry fee was already paid when
+            # position was opened.
+            allocated_entry_fee = (
+                pos.get("entry_fee", 0.0)
+                * (
+                    quantity
+                    / max(
+                        pos["initial_quantity"],
+                        1e-12,
+                    )
+                )
+            )
+
+            total += (
+                gross_pnl
+                - estimated_exit_fee
+                - allocated_entry_fee
+            )
+
+        self.open_pnl = total
+
+    # ==========================================
+    # POSITION SIZE
+    # ==========================================
+
+    def calculate_position_size(
+        self,
+        entry,
+        stop,
+    ):
+
+        self._reset_day()
+
+        entry = float(entry)
+        stop = float(stop)
+
+        stop_distance = abs(
+            entry - stop
+        )
+
+        if (
+            stop_distance <= 0
+            or entry <= 0
         ):
-            return None
-
-        # RSI над hard limit = твърде късен вход.
-        if r > RSI_HARD_MAX:
-            return None
-
-        # Не купуваме при отрицателен momentum.
-        if mom < 0:
-            return None
-
-        # Не купуваме след огромна зелена свещ.
-        if candle_body > MAX_ENTRY_CANDLE:
-            return None
+            return 0.0
 
         # ======================================
-        # TREND
+        # RISK AMOUNT
         # ======================================
 
-        htf_bull = (
-            h["close"] > h["ema200"]
-            and h["ema20"] > h["ema50"]
+        risk_amount = (
+            self.equity()
+            * RISK_PER_TRADE
         )
 
-        ltf_bull = (
-            price > l["ema200"]
-            and l["ema20"] > l["ema50"]
+        # ======================================
+        # QUANTITY FROM STOP DISTANCE
+        # ======================================
+
+        quantity = (
+            risk_amount
+            / stop_distance
         )
 
-        if not htf_bull:
-            return None
-
-        if not ltf_bull:
-            return None
-
         # ======================================
-        # CONDITIONS
+        # MAX POSITION VALUE
         # ======================================
 
-        conditions = {
-            "HTF": htf_bull,
-            "LTF": ltf_bull,
-            "RSI": RSI_MIN <= r <= RSI_MAX,
-            "MOM": mom >= MIN_MOMENTUM,
-            "TREND": ts >= MIN_TREND_STRENGTH,
-            "VOLUME": vol_ratio >= VOLUME_MULTIPLIER,
-            "MACD": hist_now > 0,
-            "ADX": adx_now >= 20,
-            "CANDLE": (
-                0 < candle_body <= MAX_GREEN_CANDLE
+        max_position_value = (
+            self.equity()
+            * MAX_POSITION_PCT
+        )
+
+        max_quantity = (
+            max_position_value
+            / entry
+        )
+
+        if quantity > max_quantity:
+
+            quantity = max_quantity
+
+        # ======================================
+        # NEVER USE MORE CASH THAN AVAILABLE
+        # ======================================
+
+        cash_quantity = (
+            self.balance
+            / (
+                entry
+                * (1 + FEE_RATE)
+            )
+        )
+
+        if quantity > cash_quantity:
+
+            quantity = cash_quantity
+
+        if quantity <= 0:
+
+            return 0.0
+
+        return round(
+            quantity,
+            6,
+        )
+
+    # ==========================================
+    # OPEN POSITION
+    # ==========================================
+
+    def try_open_position(
+        self,
+        symbol,
+        signal,
+    ):
+
+        self._reset_day()
+
+        # ======================================
+        # DAILY LOSS LIMIT
+        # ======================================
+
+        # Daily loss limit is loss-only.
+        # Profitable trades must never trigger this guard.
+        if (
+            self.daily_loss > 0
+            and self.daily_loss >= self.max_daily_loss
+        ):
+
+            print(
+                "[FAIL] Daily loss limit reached "
+                f"({self.daily_loss:.2f}/"
+                f"{self.max_daily_loss:.2f} USDT)"
+            )
+
+            return False
+
+        # ======================================
+        # EXISTING POSITION
+        # ======================================
+
+        if self.has_position(symbol):
+
+            return False
+
+        # ======================================
+        # MAX POSITIONS
+        # ======================================
+
+        if self.free_slots() <= 0:
+
+            return False
+
+        # ======================================
+        # SIGNAL DATA
+        # ======================================
+
+        entry_raw = float(
+            signal["close"]
+        )
+
+        atr_value = float(
+            signal["atr"]
+        )
+
+        if (
+            entry_raw <= 0
+            or atr_value <= 0
+        ):
+
+            return False
+
+        # ======================================
+        # ENTRY WITH SLIPPAGE
+        # ======================================
+
+        entry = (
+            entry_raw
+            * (1 + SLIPPAGE_RATE)
+        )
+
+        # ======================================
+        # STOP
+        # ======================================
+
+        stop = (
+            entry
+            - atr_value
+            * ATR_STOP_MULT
+        )
+
+        risk_per_unit = (
+            entry - stop
+        )
+
+        if risk_per_unit <= 0:
+
+            return False
+
+        # ======================================
+        # TAKE PROFIT
+        # ======================================
+
+        take = (
+            entry
+            + risk_per_unit
+            * REWARD_RISK
+        )
+
+        # ======================================
+        # POSITION SIZE
+        # ======================================
+
+        quantity = self.calculate_position_size(
+            entry,
+            stop,
+        )
+
+        if quantity <= 0:
+
+            return False
+
+        # ======================================
+        # POSITION VALUE
+        # ======================================
+
+        value = (
+            quantity
+            * entry
+        )
+
+        # ======================================
+        # ENTRY FEE
+        # ======================================
+
+        entry_fee = (
+            value
+            * FEE_RATE
+        )
+
+        total_cost = (
+            value
+            + entry_fee
+        )
+
+        # ======================================
+        # FINAL CASH CHECK
+        # ======================================
+
+        if total_cost > self.balance:
+
+            quantity = (
+                self.balance
+                / (
+                    entry
+                    * (1 + FEE_RATE)
+                )
+            )
+
+            quantity = round(
+                quantity,
+                6,
+            )
+
+            value = (
+                quantity
+                * entry
+            )
+
+            entry_fee = (
+                value
+                * FEE_RATE
+            )
+
+            total_cost = (
+                value
+                + entry_fee
+            )
+
+        if (
+            quantity <= 0
+            or total_cost > self.balance
+        ):
+
+            return False
+
+        # ======================================
+        # REMOVE CASH
+        # ======================================
+
+        self.balance -= total_cost
+
+        # ======================================
+        # SAVE POSITION
+        # ======================================
+
+        self.positions[symbol] = {
+
+            "entry": entry,
+
+            "quantity": quantity,
+
+            "initial_quantity": quantity,
+
+            "value": value,
+
+            "stop": stop,
+
+            "take": take,
+
+            "initial_risk": (
+                risk_per_unit
+                * quantity
+            ),
+
+            "highest": entry,
+
+            "last_price": entry,
+
+            "break_even": False,
+
+            "partial_taken": False,
+
+            "entry_fee": entry_fee,
+
+            "opened": (
+                datetime.now(timezone.utc)
+            ),
+
+            "score": signal.get(
+                "score",
+                0,
+            ),
+
+            "confidence": signal.get(
+                "confidence",
+                0,
+            ),
+
+            "quality": signal.get(
+                "quality",
+                "",
             ),
         }
 
-        confirmations = sum(
-            1 for value in conditions.values()
-            if value
+        # ======================================
+        # LOG
+        # ======================================
+
+        print(
+            f"[OPEN] {symbol} "
+            f"Entry={entry:.6f} "
+            f"Qty={quantity:.6f} "
+            f"SL={stop:.6f} "
+            f"TP={take:.6f} "
+            f"Risk={risk_per_unit * quantity:.4f}"
+        )
+
+        return True
+
+    # ==========================================
+    # UPDATE POSITION
+    # ==========================================
+
+    def update_position(
+        self,
+        symbol,
+        price,
+    ):
+
+        if symbol not in self.positions:
+
+            return None
+
+        pos = self.positions[symbol]
+
+        price = float(price)
+
+        pos["last_price"] = price
+
+        # ======================================
+        # HIGHEST PRICE
+        # ======================================
+
+        if price > pos["highest"]:
+
+            pos["highest"] = price
+
+        # ======================================
+        # RISK PER UNIT
+        # ======================================
+
+        risk_unit = (
+            pos["initial_risk"]
+            / max(
+                pos["initial_quantity"],
+                1e-12,
+            )
         )
 
         # ======================================
-        # SCORE
+        # BREAK EVEN
         # ======================================
 
-        score = 0
-        reasons = []
+        if (
+            not pos["break_even"]
+            and price
+            >= (
+                pos["entry"]
+                + risk_unit
+                * BREAK_EVEN_AT
+            )
+        ):
 
-        # Trend = strongest component.
-        if htf_bull:
-            score += 18
-            reasons.append("HTF")
+            pos["stop"] = max(
+                pos["stop"],
+                pos["entry"]
+                * (1 + FEE_RATE),
+            )
 
-        if ltf_bull:
-            score += 18
-            reasons.append("LTF")
+            pos["break_even"] = True
 
-        # RSI.
-        if RSI_MIN <= r <= RSI_MAX:
-            score += 10
-            reasons.append("RSI")
-
-            if 55 <= r <= 63:
-                score += 3
-                reasons.append("RSI+")
-
-        elif r < RSI_MIN:
-            score += 3
-            reasons.append("RSI-LOW")
-
-        # Momentum.
-        if mom >= STRONG_MOMENTUM:
-            score += 12
-            reasons.append("MOM++")
-        elif mom >= MIN_MOMENTUM:
-            score += 8
-            reasons.append("MOM+")
-
-        # Trend strength.
-        if ts >= STRONG_TREND_STRENGTH:
-            score += 10
-            reasons.append("TREND++")
-        elif ts >= MIN_TREND_STRENGTH:
-            score += 6
-            reasons.append("TREND+")
-
-        # ADX.
-        if adx_now >= 25:
-            score += 10
-            reasons.append("ADX+")
-        elif adx_now >= 20:
-            score += 6
-            reasons.append("ADX")
-
-        # MACD.
-        if hist_now > 0:
-            score += 8
-            reasons.append("MACD")
-
-            if hist_now > abs(
-                _safe_float(
-                    low["macd_hist"].iloc[-2]
-                )
-            ):
-                score += 2
-                reasons.append("MACD+")
-
-        # Volume.
-        if vol_ratio >= STRONG_VOLUME_RATIO:
-            score += 10
-            reasons.append("VOL++")
-        elif vol_ratio >= VOLUME_MULTIPLIER:
-            score += 6
-            reasons.append("VOL+")
-
-        # Candle.
-        if 0 < candle_body <= MAX_GREEN_CANDLE:
-            score += 5
-            reasons.append("CANDLE")
-
-        # ======================================
-        # SCORE CAP
-        # ======================================
-
-        score = min(score, 100)
-
-        # ======================================
-        # QUALITY
-        # ======================================
-
-        quality = _quality(score)
-
-        # ======================================
-        # CONFIDENCE
-        # ======================================
-
-        confidence = round(
-            (
-                confirmations
-                / len(conditions)
-            ) * 100
-        )
-
-        # ======================================
-        # BUY FILTER
-        # ======================================
-
-        # Strong BUY setup:
-        # RSI and volume remain score/confirmation factors, but are not
-        # repeated as mandatory hard gates. A 7/9 setup with strong HTF/LTF,
-        # momentum, trend, ADX and MACD is allowed to enter.
-        buy_checks = {
-            # Score must be genuinely strong. Keep the user's configured
-            # threshold, but never allow a BUY below 90.
-            "score": score >= max(int(BUY_SCORE), 90),
-
-            # Require at least 8 of 9 confirmations.
-            "confidence": confidence >= 85,
-            "confirmations": confirmations >= max(int(MIN_BUY_CONFIRMATIONS), 8),
-
-            # Trend direction.
-            "htf": htf_bull,
-            "ltf": ltf_bull,
-
-            # Do not buy an already overextended RSI.
-            "rsi": RSI_MIN <= r <= min(RSI_MAX, 63),
-
-            # Require meaningful momentum and trend strength.
-            "momentum": mom >= MIN_MOMENTUM,
-            "trend": ts >= MIN_TREND_STRENGTH,
-
-            # Positive MACD + directional strength.
-            "macd": hist_now > 0,
-            "adx": adx_now >= 20,
-
-            # Entry candle must be green and not oversized.
-            "candle": 0 < candle_body <= MAX_GREEN_CANDLE,
-
-            # Volume must confirm the move.
-            "volume": vol_ratio >= VOLUME_MULTIPLIER,
-        }
-
-        buy = all(buy_checks.values())
-
-        # Debug only near the BUY area, so the log remains useful.
-        if score >= max(int(BUY_SCORE) - 5, 85) or confirmations >= 7:
-            failed = [
-                name for name, ok in buy_checks.items()
-                if not ok
-            ]
             print(
-                f"[BUY DEBUG] {symbol} | "
-                f"score={score}>={max(int(BUY_SCORE), 90)} "
-                f"conf={confidence}>=85 "
-                f"confirm={confirmations}>=8 "
-                f"RSI={r:.1f} "
-                f"VOL={vol_ratio:.2f}>={VOLUME_MULTIPLIER} "
-                f"MOM={mom:.4f}>={MIN_MOMENTUM} "
-                f"TREND={ts:.4f}>={MIN_TREND_STRENGTH} "
-                f"ADX={adx_now:.1f} "
-                f"CANDLE={candle_body:.4f} "
-                f"FAILED={','.join(failed) or 'NONE'} "
-                f"FINAL_BUY={buy}",
-                flush=True,
+                f"[BE] {symbol}"
             )
 
         # ======================================
-        # WATCH
+        # TRAILING STOP
         # ======================================
 
-        watch = (
-            score >= WATCH_SCORE
-            and confirmations >= 5
-        )
+        if (
+            TRAILING_STOP
+            and price
+            >= (
+                pos["entry"]
+                + risk_unit
+                * TRAILING_AT_R
+            )
+        ):
 
-        if buy:
-            signal_type = "BUY"
+            trail = (
+                pos["highest"]
+                - risk_unit
+                * TRAILING_ATR
+            )
 
-        elif watch:
-            signal_type = "WATCH"
+            if trail > pos["stop"]:
 
-        else:
-            if score < IGNORE_SCORE:
-                return None
-
-            signal_type = "WATCH"
+                pos["stop"] = trail
 
         # ======================================
-        # RESULT
+        # PARTIAL TAKE PROFIT
         # ======================================
 
-        return {
-            "symbol": symbol,
-            "signal": signal_type,
+        if (
+            not pos["partial_taken"]
+            and price
+            >= (
+                pos["entry"]
+                + risk_unit * 2.0
+            )
+        ):
 
-            "score": score,
-            "confidence": confidence,
-            "quality": quality,
+            qty = (
+                pos["quantity"]
+                / 2
+            )
 
-            "close": price,
+            value = (
+                qty * price
+            )
 
-            "atr": atr_now,
-            "atr_pct": atr_pct,
+            exit_fee = (
+                value * FEE_RATE
+            )
 
-            "trend_strength": ts,
-            "momentum": mom,
+            # Allocate the original entry fee
+            # to the quantity being closed.
+            entry_fee_part = (
+                pos["entry_fee"]
+                * (
+                    qty
+                    / max(
+                        pos["initial_quantity"],
+                        1e-12,
+                    )
+                )
+            )
 
-            "volume": _safe_float(l["volume"]),
-            "volume_ma": _safe_float(l["volume_ma"]),
-            "volume_ratio": vol_ratio,
+            pnl = (
+                (price - pos["entry"])
+                * qty
+                - exit_fee
+                - entry_fee_part
+            )
 
-            "rsi": r,
-            "adx": adx_now,
-            "macd_hist": hist_now,
+            self.balance += (
+                value
+                - exit_fee
+            )
 
-            "htf_bull": htf_bull,
-            "ltf_bull": ltf_bull,
+            self.realized_pnl += pnl
 
-            "candle_body": candle_body,
+            pos["entry_fee"] = max(
+                0.0,
+                pos["entry_fee"]
+                - entry_fee_part,
+            )
 
-            "confirmations": confirmations,
-            "max_confirmations": len(conditions),
+            pos["quantity"] -= qty
 
-            "reasons": reasons,
-        }
+            pos["partial_taken"] = True
 
-    except Exception as exc:
-        print(
-            f"[SCAN ERROR] "
-            f"{symbol}: {exc}"
-        )
+            print(
+                f"[PARTIAL] {symbol} "
+                f"PnL={pnl:+.4f}"
+            )
+
+        # ======================================
+        # STOP
+        # ======================================
+
+        if price <= pos["stop"]:
+
+            return self.close_position(
+                symbol,
+                price,
+                "STOP",
+            )
+
+        # ======================================
+        # TARGET
+        # ======================================
+
+        if price >= pos["take"]:
+
+            return self.close_position(
+                symbol,
+                price,
+                "TARGET",
+            )
+
+        # ======================================
+        # UPDATE OPEN P/L
+        # ======================================
+
+        self._mark_open_pnl()
+
         return None
 
+    # ==========================================
+    # CLOSE POSITION
+    # ==========================================
 
-# ==========================================
-# MARKET SCANNER
-# ==========================================
+    def close_position(
+        self,
+        symbol,
+        price,
+        reason,
+    ):
 
-def scan_market():
-    signals = []
+        if symbol not in self.positions:
 
-    checked = 0
-    buy_count = 0
-    watch_count = 0
+            return None
 
-    for symbol in SYMBOLS:
-        checked += 1
+        pos = self.positions.pop(symbol)
 
-        result = analyze_symbol(symbol)
+        price = float(price)
 
-        if result is None:
-            continue
+        # ======================================
+        # EXIT SLIPPAGE
+        # ======================================
 
-        signals.append(result)
-
-        if result["signal"] == "BUY":
-            buy_count += 1
-
-        elif result["signal"] == "WATCH":
-            watch_count += 1
-
-    # ======================================
-    # SORT
-    # ======================================
-
-    signals.sort(
-        key=lambda x: (
-            x.get("signal") == "BUY",
-            x.get("score", 0),
-            x.get("confidence", 0),
-            x.get("adx", 0),
-            x.get("momentum", 0),
-            x.get("volume_ratio", 0),
-        ),
-        reverse=True,
-    )
-
-    # ======================================
-    # LOG
-    # ======================================
-
-    scan_message = (
-        f"[SCAN] "
-        f"Checked={checked} "
-        f"Candidates={len(signals)} "
-        f"BUY={buy_count} "
-        f"WATCH={watch_count}"
-    )
-    print(scan_message, flush=True)
-
-    import logging
-    logging.getLogger("TradingBotV4").info(scan_message)
-
-    if signals:
-        top = signals[0]
-
-        top_message = (
-            f"[TOP] "
-            f"{top['symbol']} "
-            f"{top['signal']} "
-            f"Score={top['score']} "
-            f"RSI={top['rsi']:.1f} "
-            f"ADX={top['adx']:.1f} "
-            f"MOM={top['momentum']:.4f} "
-            f"VOL={top['volume_ratio']:.2f} "
-            f"HTF={top['htf_bull']} "
-            f"LTF={top['ltf_bull']} "
-            f"CONF={top['confidence']} "
-            f"Q={top['quality']} "
-            f"CONFIRM="
-            f"{top['confirmations']}/"
-            f"{top['max_confirmations']}"
+        exit_price = (
+            price
+            * (1 - SLIPPAGE_RATE)
         )
-        print(top_message, flush=True)
 
-        import logging
-        logging.getLogger("TradingBotV4").info(top_message)
+        quantity = pos["quantity"]
+
+        # ======================================
+        # EXIT VALUE
+        # ======================================
+
+        value = (
+            exit_price
+            * quantity
+        )
+
+        # ======================================
+        # EXIT FEE
+        # ======================================
+
+        exit_fee = (
+            value
+            * FEE_RATE
+        )
+
+        # ======================================
+        # ENTRY FEE ALLOCATION
+        # ======================================
+
+        entry_fee = pos.get(
+            "entry_fee",
+            0.0,
+        )
+
+        # ======================================
+        # REALIZED P/L
+        # ======================================
+
+        gross_pnl = (
+            exit_price
+            - pos["entry"]
+        ) * quantity
+
+        pnl = (
+            gross_pnl
+            - exit_fee
+            - entry_fee
+        )
+
+        # ======================================
+        # RETURN CASH
+        # ======================================
+
+        self.balance += (
+            value
+            - exit_fee
+        )
+
+        self.realized_pnl += pnl
+
+        # ======================================
+        # STATISTICS
+        # ======================================
+
+        self.total_trades += 1
+
+        if pnl >= 0:
+
+            self.wins += 1
+
+        else:
+
+            self.losses += 1
+
+            self.daily_loss += abs(pnl)
+
+        # ======================================
+        # OPEN P/L RESET
+        # ======================================
+
+        self._mark_open_pnl()
+
+        # ======================================
+        # TRADE RESULT
+        # ======================================
+
+        trade = {
+
+            "symbol": symbol,
+
+            "reason": reason,
+
+            "entry": pos["entry"],
+
+            "exit": exit_price,
+
+            "quantity": quantity,
+
+            "pnl": pnl,
+
+            "quality": pos.get(
+                "quality",
+                "",
+            ),
+
+            "confidence": pos.get(
+                "confidence",
+                0,
+            ),
+
+            "score": pos.get(
+                "score",
+                0,
+            ),
+        }
+
+        self.closed_trades.append(
+            trade
+        )
 
         print(
-            "[REASONS] "
-            + ", ".join(top["reasons"])
+            f"[CLOSE] {symbol} "
+            f"{reason} "
+            f"PnL={pnl:+.4f}"
         )
 
-    return signals
+        return trade
+
+    # ==========================================
+    # WIN RATE
+    # ==========================================
+
+    def win_rate(self):
+
+        closed = (
+            self.wins
+            + self.losses
+        )
+
+        if closed <= 0:
+
+            return 0.0
+
+        return round(
+            self.wins
+            / closed
+            * 100,
+            1,
+        )
+
+    # ==========================================
+    # PROFIT FACTOR
+    # ==========================================
+
+    def profit_factor(self):
+
+        profits = sum(
+            t["pnl"]
+            for t in self.closed_trades
+            if t["pnl"] > 0
+        )
+
+        losses = abs(
+            sum(
+                t["pnl"]
+                for t in self.closed_trades
+                if t["pnl"] < 0
+            )
+        )
+
+        if losses == 0:
+
+            if profits > 0:
+
+                return 999.0
+
+            return 0.0
+
+        return round(
+            profits / losses,
+            2,
+        )
+
+    # ==========================================
+    # STATS
+    # ==========================================
+
+    def stats(self):
+
+        self._mark_open_pnl()
+
+        current_equity = self.equity()
+
+        return {
+
+            "balance": round(
+                self.balance,
+                2,
+            ),
+
+            "equity": round(
+                current_equity,
+                2,
+            ),
+
+            "realized": round(
+                self.realized_pnl,
+                2,
+            ),
+
+            "open_pnl": round(
+                self.open_pnl,
+                2,
+            ),
+
+            "positions": len(
+                self.positions
+            ),
+
+            "trades": self.total_trades,
+
+            "wins": self.wins,
+
+            "losses": self.losses,
+
+            "win_rate": self.win_rate(),
+
+            "profit_factor": self.profit_factor(),
+        }
