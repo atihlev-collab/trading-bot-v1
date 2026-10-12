@@ -1,3 +1,5 @@
+import os
+
 # ==========================================
 # Trading Bot V5 - CONFIG
 # ==========================================
@@ -143,7 +145,7 @@ LOG_POSITIONS = True
 # DATABASE
 # ==========================================
 
-DB_FILE = "trading_bot_v5.db"
+DB_FILE = os.getenv("TRADING_BOT_DB_FILE", "trading_bot_v5.db")
 
 # ==========================================
 # BINANCE
