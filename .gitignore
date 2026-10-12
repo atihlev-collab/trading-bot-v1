@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.db
+*.sqlite
+*.sqlite3
+backtest-results.txt
+.venv/
+venv/
+.env
+.env.*
+!.env.example
