@@ -197,7 +197,8 @@ class PaperTrader:
 
             quantity = pos["quantity"]
 
-            total += price * quantity
+            estimated_exit_price = price * (1 - SLIPPAGE_RATE)
+            total += estimated_exit_price * quantity * (1 - FEE_RATE)
 
         return total
 
@@ -251,16 +252,12 @@ class PaperTrader:
             entry = pos["entry"]
             quantity = pos["quantity"]
 
-            # Unrealized gross P/L
-            gross_pnl = (
-                px - entry
-            ) * quantity
-
-            # Estimated exit fee
+            # Mark to a conservative estimated liquidation price, net of
+            # exit slippage and fee. The entry fee has already been paid.
+            estimated_exit_price = px * (1 - SLIPPAGE_RATE)
+            gross_pnl = (estimated_exit_price - entry) * quantity
             estimated_exit_fee = (
-                px
-                * quantity
-                * FEE_RATE
+                estimated_exit_price * quantity * FEE_RATE
             )
 
             # Entry fee was already paid when
