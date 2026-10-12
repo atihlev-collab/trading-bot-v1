@@ -33,3 +33,12 @@ Do not judge the system from 5-20 trades. Track:
 - Stability across symbols and periods
 
 The built-in backtest is a research tool, not proof of an edge. Do not enable live trading from an in-sample result alone. Validate on untouched out-of-sample data and walk-forward periods first.
+
+## Railway state persistence
+The paper account (cash, open positions, stops, partial exits and statistics) is saved in SQLite. To preserve it across Railway redeploys, attach a Railway Volume mounted at `/data` and set this service variable:
+
+```text
+TRADING_BOT_DB_FILE=/data/trading_bot_v5.db
+```
+
+Without a persistent volume, SQLite snapshots may be lost when Railway replaces the container. Run only one bot instance against this account database; multiple writers could duplicate paper-account actions.
