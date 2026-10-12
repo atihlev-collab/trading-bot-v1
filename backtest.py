@@ -32,12 +32,11 @@ import pandas as pd
 import numpy as np
 
 from config import (
+    START_BALANCE,
     SYMBOLS,
 
     LOWER_TIMEFRAME,
     HIGHER_TIMEFRAME,
-
-    CANDLE_LIMIT,
 
     EMA_FAST,
     EMA_SLOW,
@@ -46,6 +45,7 @@ from config import (
     RSI_PERIOD,
     RSI_MIN,
     RSI_MAX,
+    RSI_HARD_MAX,
 
     ATR_PERIOD,
     MIN_ATR_PERCENT,
@@ -53,10 +53,17 @@ from config import (
 
     VOLUME_PERIOD,
     VOLUME_MULTIPLIER,
+    STRONG_VOLUME_RATIO,
 
     MIN_MOMENTUM,
+    STRONG_MOMENTUM,
     MIN_TREND_STRENGTH,
+    STRONG_TREND_STRENGTH,
     MAX_GREEN_CANDLE,
+    MAX_ENTRY_CANDLE,
+
+    BUY_SCORE,
+    MIN_BUY_CONFIRMATIONS,
 
     ATR_STOP_MULT,
     REWARD_RISK,
@@ -71,6 +78,10 @@ from config import (
 
     RISK_PER_TRADE,
     MAX_POSITION_PCT,
+    BACKTEST_LIMIT,
+    BACKTEST_MIN_TRADES,
+    REQUIRE_POSITIVE_EXPECTANCY,
+    MAX_BACKTEST_DRAWDOWN,
 )
 
 from indicators import (
@@ -92,85 +103,87 @@ BASE_URL = "https://data-api.binance.vision"
 # DATA
 # =========================================================
 
-def get_history(symbol, interval, limit=1000):
-    url = f"{BASE_URL}/api/v3/klines"
+INTERVAL_MS = {
+    "1m": 60_000,
+    "3m": 180_000,
+    "5m": 300_000,
+    "15m": 900_000,
+    "30m": 1_800_000,
+    "1h": 3_600_000,
+    "2h": 7_200_000,
+    "4h": 14_400_000,
+    "1d": 86_400_000,
+}
 
-    response = requests.get(
-        url,
-        params={
-            "symbol": symbol,
-            "interval": interval,
-            "limit": min(limit, 1000),
-        },
-        timeout=20,
-    )
 
-    response.raise_for_status()
+def get_history(symbol, interval, limit=None):
+    """Fetch a recent historical window in pages; Binance caps klines at 1000/page."""
+    limit = max(250, int(limit or BACKTEST_LIMIT))
+    interval_ms = INTERVAL_MS.get(interval)
+    if interval_ms is None:
+        raise ValueError(f"Unsupported interval: {interval}")
 
-    data = response.json()
+    now_ms = int(time.time() * 1000)
+    start_ms = now_ms - limit * interval_ms
+    all_rows = []
 
-    if not data:
-        raise RuntimeError(
-            f"No historical data for {symbol} {interval}"
+    while len(all_rows) < limit:
+        page_limit = min(1000, limit - len(all_rows))
+        response = requests.get(
+            f"{BASE_URL}/api/v3/klines",
+            params={
+                "symbol": symbol,
+                "interval": interval,
+                "limit": page_limit,
+                "startTime": start_ms,
+                "endTime": now_ms,
+            },
+            timeout=20,
         )
+        response.raise_for_status()
+        page = response.json()
+        if not page:
+            break
+
+        all_rows.extend(page)
+        next_start = int(page[-1][0]) + interval_ms
+        if next_start <= start_ms or len(page) < page_limit or next_start >= now_ms:
+            break
+        start_ms = next_start
+        time.sleep(0.12)
+
+    if not all_rows:
+        raise RuntimeError(f"No historical data for {symbol} {interval}")
 
     df = pd.DataFrame(
-        data,
+        all_rows,
         columns=[
-            "open_time",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-            "close_time",
-            "quote_volume",
-            "trades",
-            "taker_buy_base",
-            "taker_buy_quote",
-            "ignore",
+            "open_time", "open", "high", "low", "close", "volume",
+            "close_time", "quote_volume", "trades", "taker_buy_base",
+            "taker_buy_quote", "ignore",
         ],
     )
+    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
+    df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
 
-    df["open_time"] = pd.to_datetime(
-        df["open_time"],
-        unit="ms",
-        utc=True,
+    for column in ["open", "high", "low", "close", "volume"]:
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    # Remove duplicate page boundaries and candles that had not closed at
+    # the time this history window was requested.
+    now = pd.Timestamp.now(tz="UTC")
+    df = (
+        df.drop_duplicates(subset=["open_time"])
+        .sort_values("open_time")
+        .dropna(subset=["open", "high", "low", "close", "volume"])
     )
+    df = df[df["close_time"] < now].reset_index(drop=True)
 
-    df["close_time"] = pd.to_datetime(
-        df["close_time"],
-        unit="ms",
-        utc=True,
-    )
-
-    for column in [
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-    ]:
-        df[column] = pd.to_numeric(
-            df[column],
-            errors="coerce",
+    if len(df) < 250:
+        raise RuntimeError(
+            f"Insufficient closed candles for {symbol} {interval}: {len(df)}"
         )
-
-    df = df.dropna(
-        subset=[
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-        ]
-    )
-
-    # Never use currently-forming candle.
-    if len(df) > 2:
-        df = df.iloc[:-1].copy()
-
-    return df.reset_index(drop=True)
+    return df
 
 
 # =========================================================
@@ -180,55 +193,22 @@ def get_history(symbol, interval, limit=1000):
 def prepare(df):
     df = df.copy()
 
-    df["ema20"] = ema(
-        df["close"],
-        EMA_FAST,
+    df["ema20"] = ema(df["close"], EMA_FAST)
+    df["ema50"] = ema(df["close"], EMA_SLOW)
+    df["ema200"] = ema(df["close"], EMA_TREND)
+    df["rsi"] = rsi(df["close"], RSI_PERIOD)
+    df["atr"] = atr(df, ATR_PERIOD)
+    df["atr_pct"] = df["atr"] / df["close"].replace(0, np.nan)
+    df["mom"] = momentum(df["close"], 5)
+    df["vol_ma"] = volume_ma(df["volume"], VOLUME_PERIOD)
+    df["volume_ratio"] = df["volume"] / df["vol_ma"].replace(0, np.nan)
+    df["trend"] = trend_strength(df["ema20"], df["ema50"])
+    _, _, df["macd_hist"] = macd(df["close"])
+    df["macd_hist_prev"] = df["macd_hist"].shift(1)
+    df["adx"] = adx(df, 14)
+    df["candle_body"] = (
+        (df["close"] - df["open"]) / df["open"].replace(0, np.nan)
     )
-
-    df["ema50"] = ema(
-        df["close"],
-        EMA_SLOW,
-    )
-
-    df["ema200"] = ema(
-        df["close"],
-        EMA_TREND,
-    )
-
-    df["rsi"] = rsi(
-        df["close"],
-        RSI_PERIOD,
-    )
-
-    df["atr"] = atr(
-        df,
-        ATR_PERIOD,
-    )
-
-    df["mom"] = momentum(
-        df["close"],
-        5,
-    )
-
-    df["vol_ma"] = volume_ma(
-        df["volume"],
-        VOLUME_PERIOD,
-    )
-
-    df["trend"] = trend_strength(
-        df["ema20"],
-        df["ema50"],
-    )
-
-    _, _, df["macd_hist"] = macd(
-        df["close"]
-    )
-
-    df["adx"] = adx(
-        df,
-        14,
-    )
-
     return df
 
 
@@ -237,32 +217,22 @@ def prepare(df):
 # =========================================================
 
 def add_higher_timeframe(low, high):
+    # Use the higher-timeframe close timestamp, not its open timestamp.
+    # A 1h candle's final OHLC/indicators are unavailable until it closes.
     high_view = high[
-        [
-            "open_time",
-            "close",
-            "ema20",
-            "ema50",
-            "ema200",
-        ]
+        ["close_time", "close", "ema20", "ema50", "ema200"]
     ].copy()
-
     high_view.columns = [
-        "htf_time",
-        "htf_close",
-        "htf_ema20",
-        "htf_ema50",
-        "htf_ema200",
+        "htf_time", "htf_close", "htf_ema20", "htf_ema50", "htf_ema200"
     ]
 
     low = pd.merge_asof(
-        low.sort_values("open_time"),
+        low.sort_values("close_time"),
         high_view.sort_values("htf_time"),
-        left_on="open_time",
+        left_on="close_time",
         right_on="htf_time",
         direction="backward",
     )
-
     return low.reset_index(drop=True)
 
 
@@ -271,93 +241,101 @@ def add_higher_timeframe(low, high):
 # =========================================================
 
 def valid_entry(row):
+    """Reproduce the scanner's BUY rules on a historical closed candle."""
     required = [
-        row["htf_close"],
-        row["htf_ema20"],
-        row["htf_ema50"],
-        row["htf_ema200"],
-        row["ema20"],
-        row["ema50"],
-        row["ema200"],
-        row["rsi"],
-        row["atr"],
-        row["mom"],
-        row["vol_ma"],
-        row["trend"],
-        row["macd_hist"],
-        row["adx"],
+        row.get("htf_close"), row.get("htf_ema20"), row.get("htf_ema50"),
+        row.get("htf_ema200"), row.get("ema20"), row.get("ema50"),
+        row.get("ema200"), row.get("rsi"), row.get("atr"), row.get("atr_pct"),
+        row.get("mom"), row.get("vol_ma"), row.get("volume_ratio"),
+        row.get("trend"), row.get("macd_hist"), row.get("adx"),
+        row.get("candle_body"),
     ]
-
-    if not all(np.isfinite(x) for x in required):
+    if not all(pd.notna(value) and np.isfinite(float(value)) for value in required):
         return False
 
     price = float(row["close"])
+    rsi_now = float(row["rsi"])
+    atr_pct = float(row["atr_pct"])
+    mom_now = float(row["mom"])
+    trend_now = float(row["trend"])
+    adx_now = float(row["adx"])
+    hist_now = float(row["macd_hist"])
+    hist_prev = float(row.get("macd_hist_prev", 0.0) or 0.0)
+    volume_ratio = float(row["volume_ratio"])
+    candle_body = float(row["candle_body"])
 
-    if price <= 0:
+    if price <= 0 or not (MIN_ATR_PERCENT <= atr_pct <= MAX_ATR_PERCENT):
+        return False
+    if rsi_now > RSI_HARD_MAX or mom_now < 0:
+        return False
+    if candle_body > MAX_ENTRY_CANDLE:
         return False
 
-    atr_pct = float(row["atr"]) / price
-
-    if not (
-        MIN_ATR_PERCENT
-        <= atr_pct
-        <= MAX_ATR_PERCENT
-    ):
-        return False
-
-    volume_ma_value = float(row["vol_ma"])
-
-    if volume_ma_value <= 0:
-        return False
-
-    volume_ratio = (
-        float(row["volume"])
-        / volume_ma_value
+    htf_bull = (
+        float(row["htf_close"]) > float(row["htf_ema200"])
+        and float(row["htf_ema20"]) > float(row["htf_ema50"])
     )
-
-    candle_body = (
-        abs(float(row["close"]) - float(row["open"]))
-        / float(row["open"])
-        if row["open"] > 0
-        else 999
+    ltf_bull = (
+        price > float(row["ema200"])
+        and float(row["ema20"]) > float(row["ema50"])
     )
+    if not htf_bull or not ltf_bull:
+        return False
 
-    conditions = [
+    conditions = {
+        "HTF": htf_bull,
+        "LTF": ltf_bull,
+        "RSI": RSI_MIN <= rsi_now <= RSI_MAX,
+        "MOM": mom_now >= MIN_MOMENTUM,
+        "TREND": trend_now >= MIN_TREND_STRENGTH,
+        "VOLUME": volume_ratio >= VOLUME_MULTIPLIER,
+        "MACD": hist_now > 0,
+        "ADX": adx_now >= 20,
+        "CANDLE": 0 < candle_body <= MAX_GREEN_CANDLE,
+    }
+    confirmations = sum(bool(value) for value in conditions.values())
 
-        # Higher timeframe trend
-        row["htf_close"] > row["htf_ema200"],
-        row["htf_ema20"] > row["htf_ema50"],
+    score = 0
+    if htf_bull:
+        score += 18
+    if ltf_bull:
+        score += 18
+    if RSI_MIN <= rsi_now <= RSI_MAX:
+        score += 10
+        if 55 <= rsi_now <= 63:
+            score += 3
+    elif rsi_now < RSI_MIN:
+        score += 3
+    if mom_now >= STRONG_MOMENTUM:
+        score += 12
+    elif mom_now >= MIN_MOMENTUM:
+        score += 8
+    if trend_now >= STRONG_TREND_STRENGTH:
+        score += 10
+    elif trend_now >= MIN_TREND_STRENGTH:
+        score += 6
+    if adx_now >= 25:
+        score += 10
+    elif adx_now >= 20:
+        score += 6
+    if hist_now > 0:
+        score += 8
+        if hist_now > abs(hist_prev):
+            score += 2
+    if volume_ratio >= STRONG_VOLUME_RATIO:
+        score += 10
+    elif volume_ratio >= VOLUME_MULTIPLIER:
+        score += 6
+    if 0 < candle_body <= MAX_GREEN_CANDLE:
+        score += 5
 
-        # Lower timeframe trend
-        price > row["ema200"],
-        row["ema20"] > row["ema50"],
-
-        # Momentum
-        MIN_MOMENTUM <= row["mom"],
-
-        # RSI
-        RSI_MIN <= row["rsi"] <= RSI_MAX,
-
-        # Volatility
-        MIN_ATR_PERCENT <= atr_pct <= MAX_ATR_PERCENT,
-
-        # Trend strength
-        row["trend"] >= MIN_TREND_STRENGTH,
-
-        # Volume
-        volume_ratio >= VOLUME_MULTIPLIER,
-
-        # Candle protection
-        candle_body <= MAX_GREEN_CANDLE,
-
-        # MACD
-        row["macd_hist"] > 0,
-
-        # ADX
-        row["adx"] >= 18,
-    ]
-
-    return all(conditions)
+    score = min(score, 100)
+    return (
+        score >= int(BUY_SCORE)
+        and confirmations >= int(MIN_BUY_CONFIRMATIONS)
+        and mom_now >= MIN_MOMENTUM
+        and 0 < candle_body <= min(MAX_GREEN_CANDLE, MAX_ENTRY_CANDLE)
+    )
 
 
 # =========================================================
@@ -427,43 +405,22 @@ def calculate_position_size(
 # EXIT PRICE
 # =========================================================
 
-def close_position(
-    balance,
-    position,
-    exit_price,
-):
-    quantity = position["quantity"]
-
-    exit_price = (
-        exit_price
-        * (1 - SLIPPAGE_RATE)
+def close_position(balance, position, exit_price):
+    """Close the remaining quantity, including conservative exit slippage."""
+    quantity = float(position["quantity"])
+    exit_price = float(exit_price) * (1 - SLIPPAGE_RATE)
+    gross_value = exit_price * quantity
+    exit_fee = gross_value * FEE_RATE
+    proceeds = gross_value - exit_fee
+    remaining_entry_fee = (
+        float(position["entry"]) * quantity * FEE_RATE
     )
-
-    gross_value = (
-        exit_price
-        * quantity
-    )
-
-    exit_fee = (
-        gross_value
-        * FEE_RATE
-    )
-
-    proceeds = (
-        gross_value
+    pnl = (
+        (exit_price - float(position["entry"])) * quantity
+        - remaining_entry_fee
         - exit_fee
     )
-
-    pnl = (
-        exit_price
-        - position["entry"]
-    ) * quantity
-
-    pnl -= position["entry"] * quantity * FEE_RATE
-    pnl -= exit_fee
-
     balance += proceeds
-
     return balance, pnl, exit_price
 
 
