@@ -133,8 +133,10 @@ def analyze_symbol(symbol):
         if len(low) < 220 or len(high) < 220:
             return None
 
-        l = low.iloc[-2]
-        h = high.iloc[-2]
+        # get_candles() already removes the still-forming candle;
+        # the final row is therefore the latest fully closed candle.
+        l = low.iloc[-1]
+        h = high.iloc[-1]
 
         price = _safe_float(l["close"])
 
@@ -327,39 +329,17 @@ def analyze_symbol(symbol):
         # BUY FILTER
         # ======================================
 
-        # Strong BUY setup:
-        # RSI and volume remain score/confirmation factors, but are not
-        # repeated as mandatory hard gates. A 7/9 setup with strong HTF/LTF,
-        # momentum, trend, ADX and MACD is allowed to enter.
+        # The score and confirmation count are the flexible filters.
+        # Keep trend direction, minimum momentum and a controlled green
+        # entry candle as hard BUY requirements; RSI, volume, MACD, ADX
+        # and trend strength otherwise contribute to score/confirmations.
         buy_checks = {
-            # Score must be genuinely strong. Keep the user's configured
-            # threshold, but never allow a BUY below 90.
             "score": score >= int(BUY_SCORE),
-
-            # Require at least 8 of 9 confirmations.
-            "confidence": confidence >= 75,
             "confirmations": confirmations >= int(MIN_BUY_CONFIRMATIONS),
-
-            # Trend direction.
             "htf": htf_bull,
             "ltf": ltf_bull,
-
-            # Do not buy an already overextended RSI.
-            "rsi": RSI_MIN <= r <= min(RSI_MAX, 63),
-
-            # Require meaningful momentum and trend strength.
             "momentum": mom >= MIN_MOMENTUM,
-            "trend": ts >= MIN_TREND_STRENGTH,
-
-            # Positive MACD + directional strength.
-            "macd": hist_now > 0,
-            "adx": adx_now >= 20,
-
-            # Entry candle must be green and not oversized.
-            "candle": 0 < candle_body <= MAX_GREEN_CANDLE,
-
-            # Volume must confirm the move.
-            "volume": vol_ratio >= VOLUME_MULTIPLIER,
+            "candle": 0 < candle_body <= min(MAX_GREEN_CANDLE, MAX_ENTRY_CANDLE),
         }
 
         buy = all(buy_checks.values())
@@ -373,7 +353,7 @@ def analyze_symbol(symbol):
             print(
                 f"[BUY DEBUG] {symbol} | "
                 f"score={score}>={int(BUY_SCORE)} "
-                f"conf={confidence}>=75 "
+                f"confidence={confidence} "
                 f"confirm={confirmations}>={int(MIN_BUY_CONFIRMATIONS)} "
                 f"RSI={r:.1f} "
                 f"VOL={vol_ratio:.2f}>={VOLUME_MULTIPLIER} "
