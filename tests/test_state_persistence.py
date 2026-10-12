@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 import database
+import paper_trader
 from paper_trader import PaperTrader
 
 
@@ -58,6 +59,30 @@ class PaperAccountPersistenceTests(unittest.TestCase):
                     restored.positions["BTCUSDT"]["opened"],
                     opened_at,
                 )
+
+
+class PaperEquityTests(unittest.TestCase):
+    def test_equity_and_open_pnl_include_estimated_exit_costs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(database, "DB_FILE", os.path.join(tmp, "paper.sqlite")):
+                trader = PaperTrader()
+                trader.balance = 50.0
+                trader.positions = {
+                    "BTCUSDT": {
+                        "entry": 100.0,
+                        "quantity": 1.0,
+                        "initial_quantity": 1.0,
+                        "last_price": 110.0,
+                        "entry_fee": 0.1,
+                    }
+                }
+                with patch.object(paper_trader, "get_price", return_value=110.0):
+                    trader._mark_open_pnl()
+                    expected_exit = 110.0 * (1 - paper_trader.SLIPPAGE_RATE)
+                    expected_equity = 50.0 + expected_exit * (1 - paper_trader.FEE_RATE)
+                    expected_open_pnl = (expected_exit - 100.0) - (expected_exit * paper_trader.FEE_RATE) - 0.1
+                    self.assertAlmostEqual(trader.equity(), expected_equity, places=7)
+                    self.assertAlmostEqual(trader.open_pnl, expected_open_pnl, places=7)
 
 
 if __name__ == "__main__":
