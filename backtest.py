@@ -707,6 +707,9 @@ def run_symbol(
         })
 
         position = None
+        peak = max(peak, balance)
+        final_drawdown = ((peak - balance) / peak * 100) if peak > 0 else 0.0
+        max_drawdown = max(max_drawdown, final_drawdown)
 
     # =====================================================
     # STATISTICS
@@ -1114,13 +1117,13 @@ def main():
     if total_trades < BACKTEST_MIN_TRADES:
 
         print(
-            "NOT ENOUGH TRADES FOR A RELIABLE VERDICT."
+            f"NOT ENOUGH TRADES: {total_trades} < {BACKTEST_MIN_TRADES}."
         )
 
     elif (
         total_pnl > 0
         and aggregate_pf > 1.0
-        and total_expectancy > 0
+        and (not REQUIRE_POSITIVE_EXPECTANCY or total_expectancy > 0)
         and (worst_dd / 100.0) <= MAX_BACKTEST_DRAWDOWN
     ):
 
