@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from config import (
     START_BALANCE,
@@ -17,6 +17,7 @@ from config import (
 )
 
 from market_data import get_price
+from database import init_db, load_account_state, save_account_state
 
 
 class PaperTrader:
@@ -62,6 +63,89 @@ class PaperTrader:
         self.daily_date = (
             datetime.now(timezone.utc).date()
         )
+
+        # Restore the account snapshot. If a saved snapshot is corrupt or from
+        # an unknown version, fail loudly rather than silently resetting cash.
+        init_db()
+        state = load_account_state()
+        if state is not None:
+            required = {
+                "balance", "positions", "closed_trades", "realized_pnl",
+                "open_pnl", "total_trades", "wins", "losses",
+                "daily_loss", "daily_date",
+            }
+            missing = required.difference(state)
+            if missing:
+                raise RuntimeError(
+                    "Stored account state is incomplete; refusing to reset: "
+                    + ", ".join(sorted(missing))
+                )
+
+            if not isinstance(state["positions"], dict) or not isinstance(state["closed_trades"], list):
+                raise RuntimeError("Stored account state has invalid collections; refusing to reset")
+
+            self.start_balance = float(state.get("start_balance", START_BALANCE))
+            self.balance = float(state["balance"])
+            self.positions = state["positions"]
+            for symbol, pos in self.positions.items():
+                if not isinstance(pos, dict):
+                    raise RuntimeError(f"Stored position {symbol} is invalid")
+                opened = pos.get("opened")
+                if isinstance(opened, str):
+                    try:
+                        pos["opened"] = datetime.fromisoformat(opened)
+                    except ValueError as exc:
+                        raise RuntimeError(f"Stored position {symbol} has an invalid open time") from exc
+
+            self.closed_trades = state["closed_trades"]
+            self.realized_pnl = float(state["realized_pnl"])
+            self.open_pnl = float(state["open_pnl"])
+            self.total_trades = int(state["total_trades"])
+            self.wins = int(state["wins"])
+            self.losses = int(state["losses"])
+            self.daily_loss = float(state["daily_loss"])
+            try:
+                self.daily_date = date.fromisoformat(str(state["daily_date"]))
+            except ValueError as exc:
+                raise RuntimeError("Stored account state has an invalid daily date") from exc
+
+        self.max_daily_loss = self.start_balance * DAILY_LOSS_LIMIT
+        self._reset_day()
+        self._persist_state()
+
+    def _persist_state(self):
+        """Persist balance, positions and statistics after each state change."""
+        serialized_positions = {}
+        for symbol, pos in self.positions.items():
+            serialized = {}
+            for key, value in pos.items():
+                if isinstance(value, datetime):
+                    serialized[key] = value.isoformat()
+                elif isinstance(value, (str, int, float, bool)) or value is None:
+                    serialized[key] = value
+                elif hasattr(value, "item"):
+                    serialized[key] = value.item()
+                else:
+                    raise TypeError(
+                        f"Cannot persist position field {symbol}.{key}: "
+                        f"{type(value).__name__}"
+                    )
+            serialized_positions[symbol] = serialized
+
+        save_account_state({
+            "version": 1,
+            "start_balance": self.start_balance,
+            "balance": self.balance,
+            "positions": serialized_positions,
+            "closed_trades": self.closed_trades,
+            "realized_pnl": self.realized_pnl,
+            "open_pnl": self.open_pnl,
+            "total_trades": self.total_trades,
+            "wins": self.wins,
+            "losses": self.losses,
+            "daily_loss": self.daily_loss,
+            "daily_date": self.daily_date.isoformat(),
+        })
 
     # ==========================================
     # DAILY RESET
@@ -527,6 +611,16 @@ class PaperTrader:
             ),
         }
 
+        # Persist the open before reporting success. If storage fails, revert
+        # the in-memory position and cash rather than pretending it is durable.
+        try:
+            self._persist_state()
+        except Exception as exc:
+            self.positions.pop(symbol, None)
+            self.balance += total_cost
+            print(f"[FAIL OPEN] {symbol}: account state could not be saved: {exc}")
+            return False
+
         # ======================================
         # LOG
         # ======================================
@@ -736,6 +830,7 @@ class PaperTrader:
         # ======================================
 
         self._mark_open_pnl()
+        self._persist_state()
 
         return None
 
@@ -882,6 +977,7 @@ class PaperTrader:
         self.closed_trades.append(
             trade
         )
+        self._persist_state()
 
         print(
             f"[CLOSE] {symbol} "
@@ -953,6 +1049,7 @@ class PaperTrader:
     def stats(self):
 
         self._mark_open_pnl()
+        self._persist_state()
 
         current_equity = self.equity()
 
