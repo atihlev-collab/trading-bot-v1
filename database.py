@@ -1,3 +1,5 @@
+import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 
@@ -5,6 +7,8 @@ from config import DB_FILE
 
 
 def _connect():
+    parent = os.path.dirname(os.path.abspath(DB_FILE))
+    os.makedirs(parent, exist_ok=True)
     conn = sqlite3.connect(DB_FILE, timeout=10)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=10000")
@@ -39,6 +43,17 @@ def init_db():
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_trades_symbol "
             "ON trades(symbol)"
+        )
+
+        conn.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS account_state(
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                version INTEGER NOT NULL,
+                payload TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            '''
         )
 
 
@@ -138,6 +153,51 @@ def load_stats():
         "gross_loss": round(float(gross_loss or 0), 4),
         "profit_factor": round(float(profit_factor), 2),
     }
+
+
+def save_account_state(state):
+    """Atomically store the latest paper-account snapshot as JSON."""
+    version = int(state.get("version", 1))
+    payload = json.dumps(
+        state,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    )
+    with _connect() as conn:
+        conn.execute(
+            '''
+            INSERT INTO account_state(id, version, payload, updated_at)
+            VALUES(1, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                version = excluded.version,
+                payload = excluded.payload,
+                updated_at = excluded.updated_at
+            ''',
+            (version, payload, datetime.now(timezone.utc).isoformat()),
+        )
+
+
+def load_account_state():
+    """Return the stored account snapshot or None when this is a fresh install."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT version, payload FROM account_state WHERE id = 1"
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    version, payload = row
+    try:
+        state = json.loads(payload)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Stored paper-account state is unreadable; refusing to reset the account") from exc
+
+    if not isinstance(state, dict) or int(state.get("version", version)) != 1:
+        raise RuntimeError("Unsupported paper-account state version; refusing to reset the account")
+
+    return state
 
 
 if __name__ == "__main__":
