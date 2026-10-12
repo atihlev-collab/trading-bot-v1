@@ -583,6 +583,7 @@ def run_symbol(
             )
             if (
                 not position["partial_taken"]
+                and partial_level < take
                 and bar_high >= partial_level
                 and float(position["quantity"]) > 0
             ):
