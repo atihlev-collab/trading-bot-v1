@@ -438,10 +438,16 @@ def run_symbol(
         BACKTEST_LIMIT,
     )
 
+    low_ms = INTERVAL_MS.get(LOWER_TIMEFRAME)
+    high_ms = INTERVAL_MS.get(HIGHER_TIMEFRAME)
+    if not low_ms or not high_ms or high_ms < low_ms:
+        raise ValueError("Backtest expects a valid higher timeframe")
+    # Match the test window and include 200 extra closed HTF candles for EMA warm-up.
+    high_limit = int(np.ceil(BACKTEST_LIMIT * low_ms / high_ms)) + EMA_TREND
     high_raw = get_history(
         symbol,
         HIGHER_TIMEFRAME,
-        BACKTEST_LIMIT,
+        high_limit,
     )
 
     low = prepare(low_raw)
@@ -562,7 +568,7 @@ def run_symbol(
                 position = None
                 # No second entry on the same candle after an exit.
                 equity_curve.append(balance)
-                peak = max(peak, balance) if "peak" in locals() else balance
+                peak = max(peak, balance)
                 max_drawdown = max(
                     max_drawdown,
                     ((peak - balance) / peak * 100) if peak > 0 else 0.0,
@@ -625,7 +631,7 @@ def run_symbol(
                 })
                 position = None
                 equity_curve.append(balance)
-                peak = max(peak, balance) if "peak" in locals() else balance
+                peak = max(peak, balance)
                 max_drawdown = max(
                     max_drawdown,
                     ((peak - balance) / peak * 100) if peak > 0 else 0.0,
@@ -777,6 +783,8 @@ def run_symbol(
     return {
         "symbol": symbol,
         "trades": total_trades,
+        "gross_profit": gross_profit,
+        "gross_loss": gross_loss,
         "wins": win_count,
         "losses": loss_count,
         "win_rate": win_rate,
@@ -883,8 +891,15 @@ def main():
         df["losses"].sum()
     )
 
-    total_pnl = float(
-        df["pnl"].sum()
+    # Each symbol is tested with its own starting capital. These sums are
+    # pooled research statistics, not the result of one simultaneous portfolio.
+    total_pnl = float(df["pnl"].sum())
+    total_gross_profit = float(df["gross_profit"].sum())
+    total_gross_loss = float(df["gross_loss"].sum())
+    aggregate_pf = (
+        total_gross_profit / total_gross_loss
+        if total_gross_loss > 0
+        else (999.0 if total_gross_profit > 0 else 0.0)
     )
 
     weighted_win_rate = (
@@ -943,7 +958,7 @@ def main():
 
     print()
     print("=" * 95)
-    print("FINAL RESULTS")
+    print("FINAL RESULTS — INDEPENDENT $100 TEST PER SYMBOL")
     print("=" * 95)
 
     print(
@@ -980,8 +995,8 @@ def main():
     )
 
     print(
-        f"Total PnL           : "
-        f"{total_pnl:+.2f} USDT"
+        f"Sum of test PnL     : "
+        f"{total_pnl:+.2f} USDT (NOT a portfolio return)"
     )
 
     print(
@@ -997,6 +1012,11 @@ def main():
     print(
         f"Average PF          : "
         f"{average_pf:.2f}"
+    )
+
+    print(
+        f"Pooled PF           : "
+        f"{aggregate_pf:.2f}"
     )
 
     print(
@@ -1091,7 +1111,7 @@ def main():
     print("SYSTEM VERDICT")
     print("=" * 95)
 
-    if total_trades < 30:
+    if total_trades < BACKTEST_MIN_TRADES:
 
         print(
             "NOT ENOUGH TRADES FOR A RELIABLE VERDICT."
@@ -1099,25 +1119,26 @@ def main():
 
     elif (
         total_pnl > 0
-        and average_pf > 1.0
+        and aggregate_pf > 1.0
         and total_expectancy > 0
+        and (worst_dd / 100.0) <= MAX_BACKTEST_DRAWDOWN
     ):
 
         print(
-            "POSITIVE RESULT: strategy is profitable "
-            "on this historical sample."
+            "POSITIVE IN-SAMPLE RESULT ONLY: this sample passes the configured "
+            "profit-factor, expectancy and drawdown checks."
         )
 
         print(
-            "NEXT STEP: robustness testing and "
-            "parameter validation."
+            "NEXT STEP: untouched out-of-sample and walk-forward tests; "
+            "this is not proof of future/live profitability."
         )
 
     else:
 
         print(
-            "NOT PROFITABLE ENOUGH: strategy needs "
-            "further improvement."
+            "NOT ACCEPTED: profitability, pooled PF, expectancy or "
+            "drawdown did not pass the configured checks."
         )
 
     print("=" * 95)
