@@ -435,13 +435,13 @@ def run_symbol(
     low_raw = get_history(
         symbol,
         LOWER_TIMEFRAME,
-        1000,
+        BACKTEST_LIMIT,
     )
 
     high_raw = get_history(
         symbol,
         HIGHER_TIMEFRAME,
-        1000,
+        BACKTEST_LIMIT,
     )
 
     low = prepare(low_raw)
@@ -465,338 +465,216 @@ def run_symbol(
 
     equity_curve = []
 
-    max_balance = balance
+    peak = balance
     max_drawdown = 0.0
 
     # Need enough history for EMA200 etc.
     start_index = 220
 
-    for i in range(
-        start_index,
-        len(low),
-    ):
-        row = low.iloc[i]
+    # Signals are calculated on a fully closed candle and executed at
+    # the next candle's open. This avoids filling at a close that is only
+    # known after the signal candle has finished.
+    for i in range(start_index + 1, len(low)):
+        signal_row = low.iloc[i - 1]
+        bar = low.iloc[i]
 
-        current_close = float(
-            row["close"]
-        )
+        bar_open = float(bar["open"])
+        bar_high = float(bar["high"])
+        bar_low = float(bar["low"])
+        bar_close = float(bar["close"])
 
-        current_high = float(
-            row["high"]
-        )
+        # No stacking: this model backtests one position per symbol.
+        if position is None and balance > 0 and valid_entry(signal_row):
+            signal_atr = float(signal_row["atr"])
+            if np.isfinite(signal_atr) and signal_atr > 0 and bar_open > 0:
+                entry = bar_open * (1 + SLIPPAGE_RATE)
+                stop = entry - signal_atr * ATR_STOP_MULT
+                initial_risk = entry - stop
+                take = entry + initial_risk * REWARD_RISK
+                quantity = calculate_position_size(balance, entry, stop)
+                entry_value = quantity * entry
+                entry_fee = entry_value * FEE_RATE
 
-        current_low = float(
-            row["low"]
-        )
+                if quantity > 0 and entry_value + entry_fee <= balance:
+                    balance -= entry_value + entry_fee
+                    position = {
+                        "symbol": symbol,
+                        "entry": entry,
+                        "quantity": quantity,
+                        "initial_quantity": quantity,
+                        "stop": stop,
+                        "take": take,
+                        "initial_risk_per_unit": initial_risk,
+                        "atr": signal_atr,
+                        "highest": entry,
+                        "break_even": False,
+                        "partial_taken": False,
+                        "partial_pnl": 0.0,
+                        "entry_fee_remaining": entry_fee,
+                        "opened_index": i,
+                    }
 
-        # =================================================
-        # MANAGE OPEN POSITION
-        # =================================================
-
+        # Manage using the stop that was already active before this candle.
+        # Any newly activated break-even/trailing stop becomes active on the
+        # next candle, avoiding intrabar look-ahead.
         if position is not None:
-
-            entry = position["entry"]
-            initial_risk = position[
-                "initial_risk_per_unit"
-            ]
-
-            # -------------------------------------------------
-            # 1. BREAK EVEN
-            # -------------------------------------------------
-
-            if (
-                not position["break_even"]
-                and current_high
-                >= entry
-                + initial_risk * BREAK_EVEN_AT
-            ):
-                position["stop"] = entry
-                position["break_even"] = True
-
-            # -------------------------------------------------
-            # 2. UPDATE HIGHEST
-            # -------------------------------------------------
-
-            position["highest"] = max(
-                position["highest"],
-                current_high,
-            )
-
-            # -------------------------------------------------
-            # 3. TRAILING STOP
-            # -------------------------------------------------
-
-            if TRAILING_STOP:
-
-                trail_activation = (
-                    entry
-                    + initial_risk
-                    * TRAILING_AT_R
-                )
-
-                if (
-                    current_high
-                    >= trail_activation
-                ):
-
-                    atr_value = float(
-                        row["atr"]
-                    )
-
-                    if np.isfinite(
-                        atr_value
-                    ):
-
-                        trailing_stop = (
-                            position["highest"]
-                            - atr_value
-                            * TRAILING_ATR
-                        )
-
-                        if (
-                            trailing_stop
-                            > position["stop"]
-                        ):
-                            position["stop"] = (
-                                trailing_stop
-                            )
-
-            stop = position["stop"]
-            take = position["take"]
-
-            # -------------------------------------------------
-            # 4. EXIT LOGIC
-            # -------------------------------------------------
-
-            stop_hit = (
-                current_low
-                <= stop
-            )
-
-            take_hit = (
-                current_high
-                >= take
-            )
-
+            stop = float(position["stop"])
+            take = float(position["take"])
             exit_reason = None
             exit_price = None
 
-            # Conservative assumption:
-            # if both SL and TP happen in same candle,
-            # SL happens first.
-            if stop_hit:
-                exit_reason = "STOP"
-                exit_price = stop
-
-            elif take_hit:
-                exit_reason = "TAKE"
+            if bar_open <= stop:
+                exit_reason = "STOP_GAP"
+                exit_price = bar_open
+            elif bar_open >= take:
+                exit_reason = "TAKE_GAP"
                 exit_price = take
+            else:
+                stop_hit = bar_low <= stop
+                take_hit = bar_high >= take
+                # When both prices occur in one OHLC bar, assume the stop
+                # was hit first. This is deliberately conservative.
+                if stop_hit:
+                    exit_reason = "STOP"
+                    exit_price = stop
+                elif take_hit:
+                    exit_reason = "TAKE"
+                    exit_price = take
 
-            if exit_reason:
-
-                old_balance = balance
-
-                balance, pnl, actual_exit = (
-                    close_position(
-                        balance,
-                        position,
-                        exit_price,
-                    )
+            if exit_reason is not None:
+                balance, remaining_pnl, actual_exit = close_position(
+                    balance, position, exit_price
                 )
-
+                total_trade_pnl = (
+                    float(position.get("partial_pnl", 0.0))
+                    + remaining_pnl
+                )
                 trades.append({
                     "symbol": symbol,
-                    "entry": entry,
+                    "entry": position["entry"],
                     "exit": actual_exit,
-                    "quantity": position[
-                        "quantity"
-                    ],
-                    "pnl": pnl,
+                    "quantity": position["initial_quantity"],
+                    "pnl": total_trade_pnl,
                     "reason": exit_reason,
+                    "opened_at": str(low.iloc[position["opened_index"]]["close_time"]),
+                    "closed_at": str(bar["close_time"]),
                 })
-
                 position = None
-
-                # Equity after close.
-                equity = balance
-
-                max_balance = max(
-                    max_balance,
-                    equity,
-                )
-
-                drawdown = (
-                    (
-                        max_balance
-                        - equity
-                    )
-                    / max_balance
-                    * 100
-                    if max_balance > 0
-                    else 0
-                )
-
+                # No second entry on the same candle after an exit.
+                equity_curve.append(balance)
+                peak = max(peak, balance) if "peak" in locals() else balance
                 max_drawdown = max(
                     max_drawdown,
-                    drawdown,
+                    ((peak - balance) / peak * 100) if peak > 0 else 0.0,
                 )
-
-                equity_curve.append(
-                    equity
-                )
-
                 continue
 
-        # =================================================
-        # NO POSITION -> LOOK FOR ENTRY
-        # =================================================
-
-        if position is not None:
-            continue
-
-        if balance <= 0:
-            break
-
-        if not valid_entry(row):
-            equity_curve.append(
-                balance
+            # Conservative partial profit at +2R, half the remaining size.
+            # Same-candle stop events were checked first above.
+            partial_level = (
+                float(position["entry"])
+                + float(position["initial_risk_per_unit"]) * 2.0
             )
-            continue
+            if (
+                not position["partial_taken"]
+                and bar_high >= partial_level
+                and float(position["quantity"]) > 0
+            ):
+                old_qty = float(position["quantity"])
+                qty = old_qty / 2.0
+                partial_exit = partial_level * (1 - SLIPPAGE_RATE)
+                proceeds = qty * partial_exit
+                exit_fee = proceeds * FEE_RATE
+                entry_fee_part = (
+                    float(position["entry_fee_remaining"])
+                    * qty / old_qty
+                )
+                partial_pnl = (
+                    (partial_exit - float(position["entry"])) * qty
+                    - exit_fee
+                    - entry_fee_part
+                )
+                balance += proceeds - exit_fee
+                position["partial_pnl"] += partial_pnl
+                position["entry_fee_remaining"] = max(
+                    0.0,
+                    float(position["entry_fee_remaining"]) - entry_fee_part,
+                )
+                position["quantity"] = old_qty - qty
+                position["partial_taken"] = True
 
-        # -------------------------------------------------
-        # ENTRY
-        # -------------------------------------------------
+            # The profit target can close the remaining position after a
+            # partial exit. This is after stop priority for the same bar.
+            if bar_high >= take:
+                balance, remaining_pnl, actual_exit = close_position(
+                    balance, position, take
+                )
+                total_trade_pnl = (
+                    float(position.get("partial_pnl", 0.0))
+                    + remaining_pnl
+                )
+                trades.append({
+                    "symbol": symbol,
+                    "entry": position["entry"],
+                    "exit": actual_exit,
+                    "quantity": position["initial_quantity"],
+                    "pnl": total_trade_pnl,
+                    "reason": "TAKE",
+                    "opened_at": str(low.iloc[position["opened_index"]]["close_time"]),
+                    "closed_at": str(bar["close_time"]),
+                })
+                position = None
+                equity_curve.append(balance)
+                peak = max(peak, balance) if "peak" in locals() else balance
+                max_drawdown = max(
+                    max_drawdown,
+                    ((peak - balance) / peak * 100) if peak > 0 else 0.0,
+                )
+                continue
 
-        close_price = float(
-            row["close"]
-        )
-
-        atr_value = float(
-            row["atr"]
-        )
-
-        if (
-            not np.isfinite(atr_value)
-            or atr_value <= 0
-        ):
-            continue
-
-        entry = (
-            close_price
-            * (1 + SLIPPAGE_RATE)
-        )
-
-        stop = (
-            entry
-            - atr_value
-            * ATR_STOP_MULT
-        )
-
-        initial_risk = (
-            entry
-            - stop
-        )
-
-        if initial_risk <= 0:
-            continue
-
-        take = (
-            entry
-            + initial_risk
-            * REWARD_RISK
-        )
-
-        quantity = calculate_position_size(
-            balance,
-            entry,
-            stop,
-        )
-
-        if quantity <= 0:
-            continue
-
-        entry_value = (
-            quantity
-            * entry
-        )
-
-        entry_fee = (
-            entry_value
-            * FEE_RATE
-        )
-
-        total_entry_cost = (
-            entry_value
-            + entry_fee
-        )
-
-        if total_entry_cost > balance:
-            continue
-
-        balance -= total_entry_cost
-
-        position = {
-            "entry": entry,
-            "quantity": quantity,
-
-            "stop": stop,
-            "take": take,
-
-            "initial_stop": stop,
-
-            "initial_risk_per_unit": (
-                initial_risk
-            ),
-
-            "highest": entry,
-
-            "break_even": False,
-
-            "opened_index": i,
-        }
-
-        # Equity includes current position
-        # at close price.
-        mark_value = (
-            quantity
-            * current_close
-        )
-
-        unrealized = (
-            current_close
-            - entry
-        ) * quantity
-
-        equity = (
-            balance
-            + mark_value
-            + unrealized * 0
-        )
-
-        max_balance = max(
-            max_balance,
-            equity,
-        )
-
-        drawdown = (
-            (
-                max_balance
-                - equity
+            # Update stop levels only after checking the currently active
+            # stop/target for this candle.
+            position["highest"] = max(
+                float(position["highest"]),
+                bar_high,
             )
-            / max_balance
-            * 100
-            if max_balance > 0
-            else 0
-        )
+            entry = float(position["entry"])
+            initial_risk = float(position["initial_risk_per_unit"])
 
-        max_drawdown = max(
-            max_drawdown,
-            drawdown,
-        )
+            if (
+                not position["break_even"]
+                and bar_high >= entry + initial_risk * BREAK_EVEN_AT
+            ):
+                position["stop"] = max(
+                    float(position["stop"]),
+                    entry * (1 + FEE_RATE),
+                )
+                position["break_even"] = True
 
-        equity_curve.append(
-            equity
-        )
+            if (
+                TRAILING_STOP
+                and bar_high >= entry + initial_risk * TRAILING_AT_R
+            ):
+                trailing_stop = (
+                    float(position["highest"])
+                    - float(position["atr"]) * TRAILING_ATR
+                )
+                if trailing_stop > float(position["stop"]):
+                    position["stop"] = trailing_stop
+
+            estimated_exit_value = (
+                float(position["quantity"])
+                * bar_close
+                * (1 - FEE_RATE - SLIPPAGE_RATE)
+            )
+            equity = balance + estimated_exit_value
+        else:
+            equity = balance
+
+        equity_curve.append(equity)
+        peak = max(peak, equity)
+        drawdown = ((peak - equity) / peak * 100) if peak > 0 else 0.0
+        max_drawdown = max(max_drawdown, drawdown)
 
     # =====================================================
     # FORCE CLOSE LAST POSITION
@@ -804,25 +682,22 @@ def run_symbol(
 
     if position is not None:
 
-        last_close = float(
-            low.iloc[-1]["close"]
+        last_close = float(low.iloc[-1]["close"])
+        balance, remaining_pnl, actual_exit = close_position(
+            balance, position, last_close
         )
-
-        balance, pnl, actual_exit = (
-            close_position(
-                balance,
-                position,
-                last_close,
-            )
+        total_trade_pnl = (
+            float(position.get("partial_pnl", 0.0)) + remaining_pnl
         )
-
         trades.append({
             "symbol": symbol,
             "entry": position["entry"],
             "exit": actual_exit,
-            "quantity": position["quantity"],
-            "pnl": pnl,
+            "quantity": position["initial_quantity"],
+            "pnl": total_trade_pnl,
             "reason": "END",
+            "opened_at": str(low.iloc[position["opened_index"]]["close_time"]),
+            "closed_at": str(low.iloc[-1]["close_time"]),
         })
 
         position = None
