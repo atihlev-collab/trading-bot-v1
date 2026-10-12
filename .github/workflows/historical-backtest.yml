@@ -3,7 +3,7 @@ name: Historical strategy research
 on:
   pull_request:
     branches: ["main"]
-    types: [opened, synchronize, reopened]
+    types: [opened, reopened]
 
 permissions:
   contents: read
