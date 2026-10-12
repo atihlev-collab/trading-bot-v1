@@ -181,16 +181,9 @@ class PaperTrader:
 
             # Entry fee was already paid when
             # position was opened.
-            allocated_entry_fee = (
-                pos.get("entry_fee", 0.0)
-                * (
-                    quantity
-                    / max(
-                        pos["initial_quantity"],
-                        1e-12,
-                    )
-                )
-            )
+            # entry_fee is reduced when a partial exit occurs, so it
+            # already represents the fee allocated to the remaining size.
+            allocated_entry_fee = pos.get("entry_fee", 0.0)
 
             total += (
                 gross_pnl
@@ -337,9 +330,14 @@ class PaperTrader:
         # SIGNAL DATA
         # ======================================
 
-        entry_raw = float(
-            signal["close"]
-        )
+        # The candle close is a historical signal reference, not a live
+        # fill price. Fetch a fresh quote; skip rather than enter at a stale
+        # close if the quote endpoint is unavailable.
+        try:
+            entry_raw = float(get_price(symbol))
+        except Exception as exc:
+            print(f"[SKIP OPEN] {symbol}: current price unavailable: {exc}")
+            return False
 
         atr_value = float(
             signal["atr"]
@@ -480,6 +478,8 @@ class PaperTrader:
 
             "entry": entry,
 
+            "atr": atr_value,
+
             "quantity": quantity,
 
             "initial_quantity": quantity,
@@ -502,6 +502,8 @@ class PaperTrader:
             "break_even": False,
 
             "partial_taken": False,
+
+            "partial_realized_pnl": 0.0,
 
             "entry_fee": entry_fee,
 
@@ -620,9 +622,11 @@ class PaperTrader:
             )
         ):
 
+            # Use the ATR captured at entry. The paper trader polls quotes
+            # rather than candle ATR, so this keeps the trail deterministic.
             trail = (
                 pos["highest"]
-                - risk_unit
+                - float(pos.get("atr", risk_unit / max(ATR_STOP_MULT, 1e-12)))
                 * TRAILING_ATR
             )
 
@@ -648,8 +652,10 @@ class PaperTrader:
                 / 2
             )
 
+            partial_exit_price = price * (1 - SLIPPAGE_RATE)
+
             value = (
-                qty * price
+                qty * partial_exit_price
             )
 
             exit_fee = (
@@ -670,7 +676,7 @@ class PaperTrader:
             )
 
             pnl = (
-                (price - pos["entry"])
+                (partial_exit_price - pos["entry"])
                 * qty
                 - exit_fee
                 - entry_fee_part
@@ -682,6 +688,9 @@ class PaperTrader:
             )
 
             self.realized_pnl += pnl
+            pos["partial_realized_pnl"] = (
+                pos.get("partial_realized_pnl", 0.0) + pnl
+            )
 
             pos["entry_fee"] = max(
                 0.0,
@@ -817,17 +826,17 @@ class PaperTrader:
         # STATISTICS
         # ======================================
 
+        # Count the full position as one trade, including any realized
+        # partial exit; otherwise win rate and profit factor omit that P/L.
+        trade_pnl = pnl + float(pos.get("partial_realized_pnl", 0.0))
+
         self.total_trades += 1
 
-        if pnl >= 0:
-
+        if trade_pnl >= 0:
             self.wins += 1
-
         else:
-
             self.losses += 1
-
-            self.daily_loss += abs(pnl)
+            self.daily_loss += abs(trade_pnl)
 
         # ======================================
         # OPEN P/L RESET
@@ -851,7 +860,8 @@ class PaperTrader:
 
             "quantity": quantity,
 
-            "pnl": pnl,
+            "pnl": trade_pnl,
+            "remaining_pnl": pnl,
 
             "quality": pos.get(
                 "quality",
@@ -876,7 +886,7 @@ class PaperTrader:
         print(
             f"[CLOSE] {symbol} "
             f"{reason} "
-            f"PnL={pnl:+.4f}"
+            f"PnL={trade_pnl:+.4f}"
         )
 
         return trade
