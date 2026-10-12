@@ -165,7 +165,7 @@ DATA_CACHE_SECONDS = 20
 # BACKTEST
 # ==========================================
 
-BACKTEST_LIMIT = 1000
+BACKTEST_LIMIT = 5000
 
 BACKTEST_MIN_TRADES = 30
 
