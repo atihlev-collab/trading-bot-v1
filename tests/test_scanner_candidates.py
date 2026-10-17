@@ -7,32 +7,35 @@ import scanner
 
 
 def _prepared_frame(*, bullish=True, current_close=100.2, current_candle=0.002):
+    size = 220
     if bullish:
-        close = [100.0, current_close]
-        ema20, ema50, ema200 = [99.0, 99.2], [98.0, 98.2], [95.0, 95.0]
+        closes = [100.0] * size
+        closes[-1] = current_close
+        ema20, ema50, ema200 = [99.0] * size, [98.0] * size, [95.0] * size
     else:
-        close = [94.0, 94.0]
-        ema20, ema50, ema200 = [97.0, 97.0], [98.0, 98.0], [100.0, 100.0]
+        closes = [94.0] * size
+        ema20, ema50, ema200 = [97.0] * size, [98.0] * size, [100.0] * size
 
+    opens = [value / 1.005 for value in closes]
+    opens[-1] = current_close / (1 + current_candle)
     return pd.DataFrame({
-        "close": close,
-        "open": [99.8, current_close / (1 + current_candle)],
-        "volume": [180.0, 180.0],
+        "close": closes,
+        "open": opens,
+        "volume": [180.0] * size,
         "ema20": ema20,
         "ema50": ema50,
         "ema200": ema200,
-        "atr": [1.0, 1.0],
-        "atr_pct": [0.01, 0.01],
-        "rsi": [60.0, 60.0],
-        "momentum": [0.006, 0.006],
-        "volume_ma": [100.0, 100.0],
-        "volume_ratio": [1.8, 1.8],
-        "trend_strength": [0.5, 0.5],
-        "macd_hist": [1.0, 2.0],
-        "adx": [30.0, 30.0],
-        "candle_body": [0.005, current_candle],
+        "atr": [1.0] * size,
+        "atr_pct": [0.01] * size,
+        "rsi": [60.0] * size,
+        "momentum": [0.006] * size,
+        "volume_ma": [100.0] * size,
+        "volume_ratio": [1.8] * size,
+        "trend_strength": [0.5] * size,
+        "macd_hist": [2.0] * size,
+        "adx": [30.0] * size,
+        "candle_body": [0.005] * (size - 1) + [current_candle],
     })
-
 
 class ScannerCandidateTests(unittest.TestCase):
     def _analyze(self, low, high):
