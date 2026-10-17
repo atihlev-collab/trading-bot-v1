@@ -157,28 +157,16 @@ def analyze_symbol(symbol):
         candle_body = _safe_float(l["candle_body"])
 
         # ======================================
-        # HARD FILTERS
+        # FILTER STATUS
         # ======================================
-
-        # Невалидна волатилност.
-        if not (
+        # Keep these as entry-quality checks instead of rejecting a symbol
+        # before it can be scored. This lets the scanner report WATCH setups
+        # and, when there are no candidates, show why each symbol was ignored.
+        atr_valid = (
             MIN_ATR_PERCENT
             <= atr_pct
             <= MAX_ATR_PERCENT
-        ):
-            return None
-
-        # RSI над hard limit = твърде късен вход.
-        if r > RSI_HARD_MAX:
-            return None
-
-        # Не купуваме при отрицателен momentum.
-        if mom < 0:
-            return None
-
-        # Не купуваме след огромна зелена свещ.
-        if candle_body > MAX_ENTRY_CANDLE:
-            return None
+        )
 
         # ======================================
         # TREND
@@ -194,11 +182,8 @@ def analyze_symbol(symbol):
             and l["ema20"] > l["ema50"]
         )
 
-        if not htf_bull:
-            return None
-
-        if not ltf_bull:
-            return None
+        # Trend misalignment is a BUY blocker, not a reason to skip scoring.
+        # Some symbols can still be useful WATCH candidates.
 
         # ======================================
         # CONDITIONS
@@ -338,8 +323,12 @@ def analyze_symbol(symbol):
             "confirmations": confirmations >= int(MIN_BUY_CONFIRMATIONS),
             "htf": htf_bull,
             "ltf": ltf_bull,
+            "atr": atr_valid,
+            "rsi": r <= RSI_HARD_MAX,
             "momentum": mom >= MIN_MOMENTUM,
-            "candle": 0 < candle_body <= min(MAX_GREEN_CANDLE, MAX_ENTRY_CANDLE),
+            # A small red candle can be a controlled pullback, not an automatic
+            # rejection. Reject only an oversized candle in either direction.
+            "candle": abs(candle_body) <= min(MAX_GREEN_CANDLE, MAX_ENTRY_CANDLE),
         }
 
         buy = all(buy_checks.values())
@@ -371,8 +360,11 @@ def analyze_symbol(symbol):
         # ======================================
 
         watch = (
-            score >= WATCH_SCORE
-            and confirmations >= 5
+            (score >= WATCH_SCORE and confirmations >= 5)
+            or (
+                score >= max(int(IGNORE_SCORE) - 5, 55)
+                and confirmations >= 4
+            )
         )
 
         if buy:
@@ -382,10 +374,31 @@ def analyze_symbol(symbol):
             signal_type = "WATCH"
 
         else:
-            if score < IGNORE_SCORE:
-                return None
+            # Return an explicit rejection reason for aggregate scan diagnostics.
+            if not htf_bull and not ltf_bull:
+                rejection_reason = "trend_both"
+            elif not htf_bull:
+                rejection_reason = "trend_htf"
+            elif not ltf_bull:
+                rejection_reason = "trend_ltf"
+            elif not atr_valid:
+                rejection_reason = "atr_out_of_range"
+            elif r > RSI_HARD_MAX:
+                rejection_reason = "rsi_overextended"
+            elif mom < MIN_MOMENTUM:
+                rejection_reason = "weak_momentum"
+            elif abs(candle_body) > min(MAX_GREEN_CANDLE, MAX_ENTRY_CANDLE):
+                rejection_reason = "oversized_candle"
+            else:
+                rejection_reason = "score_or_confirmations"
 
-            signal_type = "WATCH"
+            return {
+                "symbol": symbol,
+                "signal": "IGNORE",
+                "score": score,
+                "confirmations": confirmations,
+                "rejection_reason": rejection_reason,
+            }
 
         # ======================================
         # RESULT
@@ -444,6 +457,8 @@ def scan_market():
     checked = 0
     buy_count = 0
     watch_count = 0
+    invalid_data = 0
+    rejections = {}
 
     for symbol in SYMBOLS:
         checked += 1
@@ -451,6 +466,12 @@ def scan_market():
         result = analyze_symbol(symbol)
 
         if result is None:
+            invalid_data += 1
+            continue
+
+        if result.get("signal") == "IGNORE":
+            reason = result.get("rejection_reason", "unspecified")
+            rejections[reason] = rejections.get(reason, 0) + 1
             continue
 
         signals.append(result)
@@ -490,8 +511,16 @@ def scan_market():
     )
     print(scan_message, flush=True)
 
+    filter_parts = [f"{name}={count}" for name, count in sorted(rejections.items())]
+    filter_message = (
+        f"[SCAN FILTERS] InvalidData={invalid_data} "
+        + (" ".join(filter_parts) if filter_parts else "Ignored=0")
+    )
+    print(filter_message, flush=True)
+
     import logging
     logging.getLogger("TradingBotV4").info(scan_message)
+    logging.getLogger("TradingBotV4").info(filter_message)
 
     if signals:
         top = signals[0]
