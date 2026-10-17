@@ -1,3 +1,5 @@
+import os
+
 # ==========================================
 # Trading Bot V5 - CONFIG
 # ==========================================
@@ -143,7 +145,7 @@ LOG_POSITIONS = True
 # DATABASE
 # ==========================================
 
-DB_FILE = "trading_bot_v5.db"
+DB_FILE = os.getenv("TRADING_BOT_DB_FILE", "trading_bot_v5.db")
 
 # ==========================================
 # BINANCE
@@ -165,7 +167,7 @@ DATA_CACHE_SECONDS = 20
 # BACKTEST
 # ==========================================
 
-BACKTEST_LIMIT = 1000
+BACKTEST_LIMIT = 12000
 
 BACKTEST_MIN_TRADES = 30
 

@@ -32,12 +32,11 @@ import pandas as pd
 import numpy as np
 
 from config import (
+    START_BALANCE,
     SYMBOLS,
 
     LOWER_TIMEFRAME,
     HIGHER_TIMEFRAME,
-
-    CANDLE_LIMIT,
 
     EMA_FAST,
     EMA_SLOW,
@@ -46,6 +45,7 @@ from config import (
     RSI_PERIOD,
     RSI_MIN,
     RSI_MAX,
+    RSI_HARD_MAX,
 
     ATR_PERIOD,
     MIN_ATR_PERCENT,
@@ -53,10 +53,17 @@ from config import (
 
     VOLUME_PERIOD,
     VOLUME_MULTIPLIER,
+    STRONG_VOLUME_RATIO,
 
     MIN_MOMENTUM,
+    STRONG_MOMENTUM,
     MIN_TREND_STRENGTH,
+    STRONG_TREND_STRENGTH,
     MAX_GREEN_CANDLE,
+    MAX_ENTRY_CANDLE,
+
+    BUY_SCORE,
+    MIN_BUY_CONFIRMATIONS,
 
     ATR_STOP_MULT,
     REWARD_RISK,
@@ -71,6 +78,10 @@ from config import (
 
     RISK_PER_TRADE,
     MAX_POSITION_PCT,
+    BACKTEST_LIMIT,
+    BACKTEST_MIN_TRADES,
+    REQUIRE_POSITIVE_EXPECTANCY,
+    MAX_BACKTEST_DRAWDOWN,
 )
 
 from indicators import (
@@ -92,85 +103,87 @@ BASE_URL = "https://data-api.binance.vision"
 # DATA
 # =========================================================
 
-def get_history(symbol, interval, limit=1000):
-    url = f"{BASE_URL}/api/v3/klines"
+INTERVAL_MS = {
+    "1m": 60_000,
+    "3m": 180_000,
+    "5m": 300_000,
+    "15m": 900_000,
+    "30m": 1_800_000,
+    "1h": 3_600_000,
+    "2h": 7_200_000,
+    "4h": 14_400_000,
+    "1d": 86_400_000,
+}
 
-    response = requests.get(
-        url,
-        params={
-            "symbol": symbol,
-            "interval": interval,
-            "limit": min(limit, 1000),
-        },
-        timeout=20,
-    )
 
-    response.raise_for_status()
+def get_history(symbol, interval, limit=None):
+    """Fetch a recent historical window in pages; Binance caps klines at 1000/page."""
+    limit = max(250, int(limit or BACKTEST_LIMIT))
+    interval_ms = INTERVAL_MS.get(interval)
+    if interval_ms is None:
+        raise ValueError(f"Unsupported interval: {interval}")
 
-    data = response.json()
+    now_ms = int(time.time() * 1000)
+    start_ms = now_ms - limit * interval_ms
+    all_rows = []
 
-    if not data:
-        raise RuntimeError(
-            f"No historical data for {symbol} {interval}"
+    while len(all_rows) < limit:
+        page_limit = min(1000, limit - len(all_rows))
+        response = requests.get(
+            f"{BASE_URL}/api/v3/klines",
+            params={
+                "symbol": symbol,
+                "interval": interval,
+                "limit": page_limit,
+                "startTime": start_ms,
+                "endTime": now_ms,
+            },
+            timeout=20,
         )
+        response.raise_for_status()
+        page = response.json()
+        if not page:
+            break
+
+        all_rows.extend(page)
+        next_start = int(page[-1][0]) + interval_ms
+        if next_start <= start_ms or len(page) < page_limit or next_start >= now_ms:
+            break
+        start_ms = next_start
+        time.sleep(0.12)
+
+    if not all_rows:
+        raise RuntimeError(f"No historical data for {symbol} {interval}")
 
     df = pd.DataFrame(
-        data,
+        all_rows,
         columns=[
-            "open_time",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-            "close_time",
-            "quote_volume",
-            "trades",
-            "taker_buy_base",
-            "taker_buy_quote",
-            "ignore",
+            "open_time", "open", "high", "low", "close", "volume",
+            "close_time", "quote_volume", "trades", "taker_buy_base",
+            "taker_buy_quote", "ignore",
         ],
     )
+    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
+    df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
 
-    df["open_time"] = pd.to_datetime(
-        df["open_time"],
-        unit="ms",
-        utc=True,
+    for column in ["open", "high", "low", "close", "volume"]:
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    # Remove duplicate page boundaries and candles that had not closed at
+    # the time this history window was requested.
+    now = pd.Timestamp.now(tz="UTC")
+    df = (
+        df.drop_duplicates(subset=["open_time"])
+        .sort_values("open_time")
+        .dropna(subset=["open", "high", "low", "close", "volume"])
     )
+    df = df[df["close_time"] < now].reset_index(drop=True)
 
-    df["close_time"] = pd.to_datetime(
-        df["close_time"],
-        unit="ms",
-        utc=True,
-    )
-
-    for column in [
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-    ]:
-        df[column] = pd.to_numeric(
-            df[column],
-            errors="coerce",
+    if len(df) < 250:
+        raise RuntimeError(
+            f"Insufficient closed candles for {symbol} {interval}: {len(df)}"
         )
-
-    df = df.dropna(
-        subset=[
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-        ]
-    )
-
-    # Never use currently-forming candle.
-    if len(df) > 2:
-        df = df.iloc[:-1].copy()
-
-    return df.reset_index(drop=True)
+    return df
 
 
 # =========================================================
@@ -180,55 +193,22 @@ def get_history(symbol, interval, limit=1000):
 def prepare(df):
     df = df.copy()
 
-    df["ema20"] = ema(
-        df["close"],
-        EMA_FAST,
+    df["ema20"] = ema(df["close"], EMA_FAST)
+    df["ema50"] = ema(df["close"], EMA_SLOW)
+    df["ema200"] = ema(df["close"], EMA_TREND)
+    df["rsi"] = rsi(df["close"], RSI_PERIOD)
+    df["atr"] = atr(df, ATR_PERIOD)
+    df["atr_pct"] = df["atr"] / df["close"].replace(0, np.nan)
+    df["mom"] = momentum(df["close"], 5)
+    df["vol_ma"] = volume_ma(df["volume"], VOLUME_PERIOD)
+    df["volume_ratio"] = df["volume"] / df["vol_ma"].replace(0, np.nan)
+    df["trend"] = trend_strength(df["ema20"], df["ema50"])
+    _, _, df["macd_hist"] = macd(df["close"])
+    df["macd_hist_prev"] = df["macd_hist"].shift(1)
+    df["adx"] = adx(df, 14)
+    df["candle_body"] = (
+        (df["close"] - df["open"]) / df["open"].replace(0, np.nan)
     )
-
-    df["ema50"] = ema(
-        df["close"],
-        EMA_SLOW,
-    )
-
-    df["ema200"] = ema(
-        df["close"],
-        EMA_TREND,
-    )
-
-    df["rsi"] = rsi(
-        df["close"],
-        RSI_PERIOD,
-    )
-
-    df["atr"] = atr(
-        df,
-        ATR_PERIOD,
-    )
-
-    df["mom"] = momentum(
-        df["close"],
-        5,
-    )
-
-    df["vol_ma"] = volume_ma(
-        df["volume"],
-        VOLUME_PERIOD,
-    )
-
-    df["trend"] = trend_strength(
-        df["ema20"],
-        df["ema50"],
-    )
-
-    _, _, df["macd_hist"] = macd(
-        df["close"]
-    )
-
-    df["adx"] = adx(
-        df,
-        14,
-    )
-
     return df
 
 
@@ -237,32 +217,22 @@ def prepare(df):
 # =========================================================
 
 def add_higher_timeframe(low, high):
+    # Use the higher-timeframe close timestamp, not its open timestamp.
+    # A 1h candle's final OHLC/indicators are unavailable until it closes.
     high_view = high[
-        [
-            "open_time",
-            "close",
-            "ema20",
-            "ema50",
-            "ema200",
-        ]
+        ["close_time", "close", "ema20", "ema50", "ema200"]
     ].copy()
-
     high_view.columns = [
-        "htf_time",
-        "htf_close",
-        "htf_ema20",
-        "htf_ema50",
-        "htf_ema200",
+        "htf_time", "htf_close", "htf_ema20", "htf_ema50", "htf_ema200"
     ]
 
     low = pd.merge_asof(
-        low.sort_values("open_time"),
+        low.sort_values("close_time"),
         high_view.sort_values("htf_time"),
-        left_on="open_time",
+        left_on="close_time",
         right_on="htf_time",
         direction="backward",
     )
-
     return low.reset_index(drop=True)
 
 
@@ -271,93 +241,101 @@ def add_higher_timeframe(low, high):
 # =========================================================
 
 def valid_entry(row):
+    """Reproduce the scanner's BUY rules on a historical closed candle."""
     required = [
-        row["htf_close"],
-        row["htf_ema20"],
-        row["htf_ema50"],
-        row["htf_ema200"],
-        row["ema20"],
-        row["ema50"],
-        row["ema200"],
-        row["rsi"],
-        row["atr"],
-        row["mom"],
-        row["vol_ma"],
-        row["trend"],
-        row["macd_hist"],
-        row["adx"],
+        row.get("htf_close"), row.get("htf_ema20"), row.get("htf_ema50"),
+        row.get("htf_ema200"), row.get("ema20"), row.get("ema50"),
+        row.get("ema200"), row.get("rsi"), row.get("atr"), row.get("atr_pct"),
+        row.get("mom"), row.get("vol_ma"), row.get("volume_ratio"),
+        row.get("trend"), row.get("macd_hist"), row.get("adx"),
+        row.get("candle_body"),
     ]
-
-    if not all(np.isfinite(x) for x in required):
+    if not all(pd.notna(value) and np.isfinite(float(value)) for value in required):
         return False
 
     price = float(row["close"])
+    rsi_now = float(row["rsi"])
+    atr_pct = float(row["atr_pct"])
+    mom_now = float(row["mom"])
+    trend_now = float(row["trend"])
+    adx_now = float(row["adx"])
+    hist_now = float(row["macd_hist"])
+    hist_prev = float(row.get("macd_hist_prev", 0.0) or 0.0)
+    volume_ratio = float(row["volume_ratio"])
+    candle_body = float(row["candle_body"])
 
-    if price <= 0:
+    if price <= 0 or not (MIN_ATR_PERCENT <= atr_pct <= MAX_ATR_PERCENT):
+        return False
+    if rsi_now > RSI_HARD_MAX or mom_now < 0:
+        return False
+    if candle_body > MAX_ENTRY_CANDLE:
         return False
 
-    atr_pct = float(row["atr"]) / price
-
-    if not (
-        MIN_ATR_PERCENT
-        <= atr_pct
-        <= MAX_ATR_PERCENT
-    ):
-        return False
-
-    volume_ma_value = float(row["vol_ma"])
-
-    if volume_ma_value <= 0:
-        return False
-
-    volume_ratio = (
-        float(row["volume"])
-        / volume_ma_value
+    htf_bull = (
+        float(row["htf_close"]) > float(row["htf_ema200"])
+        and float(row["htf_ema20"]) > float(row["htf_ema50"])
     )
-
-    candle_body = (
-        abs(float(row["close"]) - float(row["open"]))
-        / float(row["open"])
-        if row["open"] > 0
-        else 999
+    ltf_bull = (
+        price > float(row["ema200"])
+        and float(row["ema20"]) > float(row["ema50"])
     )
+    if not htf_bull or not ltf_bull:
+        return False
 
-    conditions = [
+    conditions = {
+        "HTF": htf_bull,
+        "LTF": ltf_bull,
+        "RSI": RSI_MIN <= rsi_now <= RSI_MAX,
+        "MOM": mom_now >= MIN_MOMENTUM,
+        "TREND": trend_now >= MIN_TREND_STRENGTH,
+        "VOLUME": volume_ratio >= VOLUME_MULTIPLIER,
+        "MACD": hist_now > 0,
+        "ADX": adx_now >= 20,
+        "CANDLE": 0 < candle_body <= MAX_GREEN_CANDLE,
+    }
+    confirmations = sum(bool(value) for value in conditions.values())
 
-        # Higher timeframe trend
-        row["htf_close"] > row["htf_ema200"],
-        row["htf_ema20"] > row["htf_ema50"],
+    score = 0
+    if htf_bull:
+        score += 18
+    if ltf_bull:
+        score += 18
+    if RSI_MIN <= rsi_now <= RSI_MAX:
+        score += 10
+        if 55 <= rsi_now <= 63:
+            score += 3
+    elif rsi_now < RSI_MIN:
+        score += 3
+    if mom_now >= STRONG_MOMENTUM:
+        score += 12
+    elif mom_now >= MIN_MOMENTUM:
+        score += 8
+    if trend_now >= STRONG_TREND_STRENGTH:
+        score += 10
+    elif trend_now >= MIN_TREND_STRENGTH:
+        score += 6
+    if adx_now >= 25:
+        score += 10
+    elif adx_now >= 20:
+        score += 6
+    if hist_now > 0:
+        score += 8
+        if hist_now > abs(hist_prev):
+            score += 2
+    if volume_ratio >= STRONG_VOLUME_RATIO:
+        score += 10
+    elif volume_ratio >= VOLUME_MULTIPLIER:
+        score += 6
+    if 0 < candle_body <= MAX_GREEN_CANDLE:
+        score += 5
 
-        # Lower timeframe trend
-        price > row["ema200"],
-        row["ema20"] > row["ema50"],
-
-        # Momentum
-        MIN_MOMENTUM <= row["mom"],
-
-        # RSI
-        RSI_MIN <= row["rsi"] <= RSI_MAX,
-
-        # Volatility
-        MIN_ATR_PERCENT <= atr_pct <= MAX_ATR_PERCENT,
-
-        # Trend strength
-        row["trend"] >= MIN_TREND_STRENGTH,
-
-        # Volume
-        volume_ratio >= VOLUME_MULTIPLIER,
-
-        # Candle protection
-        candle_body <= MAX_GREEN_CANDLE,
-
-        # MACD
-        row["macd_hist"] > 0,
-
-        # ADX
-        row["adx"] >= 18,
-    ]
-
-    return all(conditions)
+    score = min(score, 100)
+    return (
+        score >= int(BUY_SCORE)
+        and confirmations >= int(MIN_BUY_CONFIRMATIONS)
+        and mom_now >= MIN_MOMENTUM
+        and 0 < candle_body <= min(MAX_GREEN_CANDLE, MAX_ENTRY_CANDLE)
+    )
 
 
 # =========================================================
@@ -427,43 +405,22 @@ def calculate_position_size(
 # EXIT PRICE
 # =========================================================
 
-def close_position(
-    balance,
-    position,
-    exit_price,
-):
-    quantity = position["quantity"]
-
-    exit_price = (
-        exit_price
-        * (1 - SLIPPAGE_RATE)
+def close_position(balance, position, exit_price):
+    """Close the remaining quantity, including conservative exit slippage."""
+    quantity = float(position["quantity"])
+    exit_price = float(exit_price) * (1 - SLIPPAGE_RATE)
+    gross_value = exit_price * quantity
+    exit_fee = gross_value * FEE_RATE
+    proceeds = gross_value - exit_fee
+    remaining_entry_fee = (
+        float(position["entry"]) * quantity * FEE_RATE
     )
-
-    gross_value = (
-        exit_price
-        * quantity
-    )
-
-    exit_fee = (
-        gross_value
-        * FEE_RATE
-    )
-
-    proceeds = (
-        gross_value
+    pnl = (
+        (exit_price - float(position["entry"])) * quantity
+        - remaining_entry_fee
         - exit_fee
     )
-
-    pnl = (
-        exit_price
-        - position["entry"]
-    ) * quantity
-
-    pnl -= position["entry"] * quantity * FEE_RATE
-    pnl -= exit_fee
-
     balance += proceeds
-
     return balance, pnl, exit_price
 
 
@@ -478,13 +435,19 @@ def run_symbol(
     low_raw = get_history(
         symbol,
         LOWER_TIMEFRAME,
-        1000,
+        BACKTEST_LIMIT,
     )
 
+    low_ms = INTERVAL_MS.get(LOWER_TIMEFRAME)
+    high_ms = INTERVAL_MS.get(HIGHER_TIMEFRAME)
+    if not low_ms or not high_ms or high_ms < low_ms:
+        raise ValueError("Backtest expects a valid higher timeframe")
+    # Match the test window and include 200 extra closed HTF candles for EMA warm-up.
+    high_limit = int(np.ceil(BACKTEST_LIMIT * low_ms / high_ms)) + EMA_TREND
     high_raw = get_history(
         symbol,
         HIGHER_TIMEFRAME,
-        1000,
+        high_limit,
     )
 
     low = prepare(low_raw)
@@ -508,338 +471,217 @@ def run_symbol(
 
     equity_curve = []
 
-    max_balance = balance
+    peak = balance
     max_drawdown = 0.0
 
     # Need enough history for EMA200 etc.
     start_index = 220
 
-    for i in range(
-        start_index,
-        len(low),
-    ):
-        row = low.iloc[i]
+    # Signals are calculated on a fully closed candle and executed at
+    # the next candle's open. This avoids filling at a close that is only
+    # known after the signal candle has finished.
+    for i in range(start_index + 1, len(low)):
+        signal_row = low.iloc[i - 1]
+        bar = low.iloc[i]
 
-        current_close = float(
-            row["close"]
-        )
+        bar_open = float(bar["open"])
+        bar_high = float(bar["high"])
+        bar_low = float(bar["low"])
+        bar_close = float(bar["close"])
 
-        current_high = float(
-            row["high"]
-        )
+        # No stacking: this model backtests one position per symbol.
+        if position is None and balance > 0 and valid_entry(signal_row):
+            signal_atr = float(signal_row["atr"])
+            if np.isfinite(signal_atr) and signal_atr > 0 and bar_open > 0:
+                entry = bar_open * (1 + SLIPPAGE_RATE)
+                stop = entry - signal_atr * ATR_STOP_MULT
+                initial_risk = entry - stop
+                take = entry + initial_risk * REWARD_RISK
+                quantity = calculate_position_size(balance, entry, stop)
+                entry_value = quantity * entry
+                entry_fee = entry_value * FEE_RATE
 
-        current_low = float(
-            row["low"]
-        )
+                if quantity > 0 and entry_value + entry_fee <= balance:
+                    balance -= entry_value + entry_fee
+                    position = {
+                        "symbol": symbol,
+                        "entry": entry,
+                        "quantity": quantity,
+                        "initial_quantity": quantity,
+                        "stop": stop,
+                        "take": take,
+                        "initial_risk_per_unit": initial_risk,
+                        "atr": signal_atr,
+                        "highest": entry,
+                        "break_even": False,
+                        "partial_taken": False,
+                        "partial_pnl": 0.0,
+                        "entry_fee_remaining": entry_fee,
+                        "opened_index": i,
+                    }
 
-        # =================================================
-        # MANAGE OPEN POSITION
-        # =================================================
-
+        # Manage using the stop that was already active before this candle.
+        # Any newly activated break-even/trailing stop becomes active on the
+        # next candle, avoiding intrabar look-ahead.
         if position is not None:
-
-            entry = position["entry"]
-            initial_risk = position[
-                "initial_risk_per_unit"
-            ]
-
-            # -------------------------------------------------
-            # 1. BREAK EVEN
-            # -------------------------------------------------
-
-            if (
-                not position["break_even"]
-                and current_high
-                >= entry
-                + initial_risk * BREAK_EVEN_AT
-            ):
-                position["stop"] = entry
-                position["break_even"] = True
-
-            # -------------------------------------------------
-            # 2. UPDATE HIGHEST
-            # -------------------------------------------------
-
-            position["highest"] = max(
-                position["highest"],
-                current_high,
-            )
-
-            # -------------------------------------------------
-            # 3. TRAILING STOP
-            # -------------------------------------------------
-
-            if TRAILING_STOP:
-
-                trail_activation = (
-                    entry
-                    + initial_risk
-                    * TRAILING_AT_R
-                )
-
-                if (
-                    current_high
-                    >= trail_activation
-                ):
-
-                    atr_value = float(
-                        row["atr"]
-                    )
-
-                    if np.isfinite(
-                        atr_value
-                    ):
-
-                        trailing_stop = (
-                            position["highest"]
-                            - atr_value
-                            * TRAILING_ATR
-                        )
-
-                        if (
-                            trailing_stop
-                            > position["stop"]
-                        ):
-                            position["stop"] = (
-                                trailing_stop
-                            )
-
-            stop = position["stop"]
-            take = position["take"]
-
-            # -------------------------------------------------
-            # 4. EXIT LOGIC
-            # -------------------------------------------------
-
-            stop_hit = (
-                current_low
-                <= stop
-            )
-
-            take_hit = (
-                current_high
-                >= take
-            )
-
+            stop = float(position["stop"])
+            take = float(position["take"])
             exit_reason = None
             exit_price = None
 
-            # Conservative assumption:
-            # if both SL and TP happen in same candle,
-            # SL happens first.
-            if stop_hit:
-                exit_reason = "STOP"
-                exit_price = stop
-
-            elif take_hit:
-                exit_reason = "TAKE"
+            if bar_open <= stop:
+                exit_reason = "STOP_GAP"
+                exit_price = bar_open
+            elif bar_open >= take:
+                exit_reason = "TAKE_GAP"
                 exit_price = take
+            else:
+                stop_hit = bar_low <= stop
+                take_hit = bar_high >= take
+                # When both prices occur in one OHLC bar, assume the stop
+                # was hit first. This is deliberately conservative.
+                if stop_hit:
+                    exit_reason = "STOP"
+                    exit_price = stop
+                elif take_hit:
+                    exit_reason = "TAKE"
+                    exit_price = take
 
-            if exit_reason:
-
-                old_balance = balance
-
-                balance, pnl, actual_exit = (
-                    close_position(
-                        balance,
-                        position,
-                        exit_price,
-                    )
+            if exit_reason is not None:
+                balance, remaining_pnl, actual_exit = close_position(
+                    balance, position, exit_price
                 )
-
+                total_trade_pnl = (
+                    float(position.get("partial_pnl", 0.0))
+                    + remaining_pnl
+                )
                 trades.append({
                     "symbol": symbol,
-                    "entry": entry,
+                    "entry": position["entry"],
                     "exit": actual_exit,
-                    "quantity": position[
-                        "quantity"
-                    ],
-                    "pnl": pnl,
+                    "quantity": position["initial_quantity"],
+                    "pnl": total_trade_pnl,
                     "reason": exit_reason,
+                    "opened_at": str(low.iloc[position["opened_index"]]["close_time"]),
+                    "closed_at": str(bar["close_time"]),
                 })
-
                 position = None
-
-                # Equity after close.
-                equity = balance
-
-                max_balance = max(
-                    max_balance,
-                    equity,
-                )
-
-                drawdown = (
-                    (
-                        max_balance
-                        - equity
-                    )
-                    / max_balance
-                    * 100
-                    if max_balance > 0
-                    else 0
-                )
-
+                # No second entry on the same candle after an exit.
+                equity_curve.append(balance)
+                peak = max(peak, balance)
                 max_drawdown = max(
                     max_drawdown,
-                    drawdown,
+                    ((peak - balance) / peak * 100) if peak > 0 else 0.0,
                 )
-
-                equity_curve.append(
-                    equity
-                )
-
                 continue
 
-        # =================================================
-        # NO POSITION -> LOOK FOR ENTRY
-        # =================================================
-
-        if position is not None:
-            continue
-
-        if balance <= 0:
-            break
-
-        if not valid_entry(row):
-            equity_curve.append(
-                balance
+            # Conservative partial profit at +2R, half the remaining size.
+            # Same-candle stop events were checked first above.
+            partial_level = (
+                float(position["entry"])
+                + float(position["initial_risk_per_unit"]) * 2.0
             )
-            continue
+            if (
+                not position["partial_taken"]
+                and partial_level < take
+                and bar_high >= partial_level
+                and float(position["quantity"]) > 0
+            ):
+                old_qty = float(position["quantity"])
+                qty = old_qty / 2.0
+                partial_exit = partial_level * (1 - SLIPPAGE_RATE)
+                proceeds = qty * partial_exit
+                exit_fee = proceeds * FEE_RATE
+                entry_fee_part = (
+                    float(position["entry_fee_remaining"])
+                    * qty / old_qty
+                )
+                partial_pnl = (
+                    (partial_exit - float(position["entry"])) * qty
+                    - exit_fee
+                    - entry_fee_part
+                )
+                balance += proceeds - exit_fee
+                position["partial_pnl"] += partial_pnl
+                position["entry_fee_remaining"] = max(
+                    0.0,
+                    float(position["entry_fee_remaining"]) - entry_fee_part,
+                )
+                position["quantity"] = old_qty - qty
+                position["partial_taken"] = True
 
-        # -------------------------------------------------
-        # ENTRY
-        # -------------------------------------------------
+            # The profit target can close the remaining position after a
+            # partial exit. This is after stop priority for the same bar.
+            if bar_high >= take:
+                balance, remaining_pnl, actual_exit = close_position(
+                    balance, position, take
+                )
+                total_trade_pnl = (
+                    float(position.get("partial_pnl", 0.0))
+                    + remaining_pnl
+                )
+                trades.append({
+                    "symbol": symbol,
+                    "entry": position["entry"],
+                    "exit": actual_exit,
+                    "quantity": position["initial_quantity"],
+                    "pnl": total_trade_pnl,
+                    "reason": "TAKE",
+                    "opened_at": str(low.iloc[position["opened_index"]]["close_time"]),
+                    "closed_at": str(bar["close_time"]),
+                })
+                position = None
+                equity_curve.append(balance)
+                peak = max(peak, balance)
+                max_drawdown = max(
+                    max_drawdown,
+                    ((peak - balance) / peak * 100) if peak > 0 else 0.0,
+                )
+                continue
 
-        close_price = float(
-            row["close"]
-        )
-
-        atr_value = float(
-            row["atr"]
-        )
-
-        if (
-            not np.isfinite(atr_value)
-            or atr_value <= 0
-        ):
-            continue
-
-        entry = (
-            close_price
-            * (1 + SLIPPAGE_RATE)
-        )
-
-        stop = (
-            entry
-            - atr_value
-            * ATR_STOP_MULT
-        )
-
-        initial_risk = (
-            entry
-            - stop
-        )
-
-        if initial_risk <= 0:
-            continue
-
-        take = (
-            entry
-            + initial_risk
-            * REWARD_RISK
-        )
-
-        quantity = calculate_position_size(
-            balance,
-            entry,
-            stop,
-        )
-
-        if quantity <= 0:
-            continue
-
-        entry_value = (
-            quantity
-            * entry
-        )
-
-        entry_fee = (
-            entry_value
-            * FEE_RATE
-        )
-
-        total_entry_cost = (
-            entry_value
-            + entry_fee
-        )
-
-        if total_entry_cost > balance:
-            continue
-
-        balance -= total_entry_cost
-
-        position = {
-            "entry": entry,
-            "quantity": quantity,
-
-            "stop": stop,
-            "take": take,
-
-            "initial_stop": stop,
-
-            "initial_risk_per_unit": (
-                initial_risk
-            ),
-
-            "highest": entry,
-
-            "break_even": False,
-
-            "opened_index": i,
-        }
-
-        # Equity includes current position
-        # at close price.
-        mark_value = (
-            quantity
-            * current_close
-        )
-
-        unrealized = (
-            current_close
-            - entry
-        ) * quantity
-
-        equity = (
-            balance
-            + mark_value
-            + unrealized * 0
-        )
-
-        max_balance = max(
-            max_balance,
-            equity,
-        )
-
-        drawdown = (
-            (
-                max_balance
-                - equity
+            # Update stop levels only after checking the currently active
+            # stop/target for this candle.
+            position["highest"] = max(
+                float(position["highest"]),
+                bar_high,
             )
-            / max_balance
-            * 100
-            if max_balance > 0
-            else 0
-        )
+            entry = float(position["entry"])
+            initial_risk = float(position["initial_risk_per_unit"])
 
-        max_drawdown = max(
-            max_drawdown,
-            drawdown,
-        )
+            if (
+                not position["break_even"]
+                and bar_high >= entry + initial_risk * BREAK_EVEN_AT
+            ):
+                position["stop"] = max(
+                    float(position["stop"]),
+                    entry * (1 + FEE_RATE),
+                )
+                position["break_even"] = True
 
-        equity_curve.append(
-            equity
-        )
+            if (
+                TRAILING_STOP
+                and bar_high >= entry + initial_risk * TRAILING_AT_R
+            ):
+                trailing_stop = (
+                    float(position["highest"])
+                    - float(position["atr"]) * TRAILING_ATR
+                )
+                if trailing_stop > float(position["stop"]):
+                    position["stop"] = trailing_stop
+
+            estimated_exit_value = (
+                float(position["quantity"])
+                * bar_close
+                * (1 - FEE_RATE - SLIPPAGE_RATE)
+            )
+            equity = balance + estimated_exit_value
+        else:
+            equity = balance
+
+        equity_curve.append(equity)
+        peak = max(peak, equity)
+        drawdown = ((peak - equity) / peak * 100) if peak > 0 else 0.0
+        max_drawdown = max(max_drawdown, drawdown)
 
     # =====================================================
     # FORCE CLOSE LAST POSITION
@@ -847,28 +689,28 @@ def run_symbol(
 
     if position is not None:
 
-        last_close = float(
-            low.iloc[-1]["close"]
+        last_close = float(low.iloc[-1]["close"])
+        balance, remaining_pnl, actual_exit = close_position(
+            balance, position, last_close
         )
-
-        balance, pnl, actual_exit = (
-            close_position(
-                balance,
-                position,
-                last_close,
-            )
+        total_trade_pnl = (
+            float(position.get("partial_pnl", 0.0)) + remaining_pnl
         )
-
         trades.append({
             "symbol": symbol,
             "entry": position["entry"],
             "exit": actual_exit,
-            "quantity": position["quantity"],
-            "pnl": pnl,
+            "quantity": position["initial_quantity"],
+            "pnl": total_trade_pnl,
             "reason": "END",
+            "opened_at": str(low.iloc[position["opened_index"]]["close_time"]),
+            "closed_at": str(low.iloc[-1]["close_time"]),
         })
 
         position = None
+        peak = max(peak, balance)
+        final_drawdown = ((peak - balance) / peak * 100) if peak > 0 else 0.0
+        max_drawdown = max(max_drawdown, final_drawdown)
 
     # =====================================================
     # STATISTICS
@@ -945,6 +787,8 @@ def run_symbol(
     return {
         "symbol": symbol,
         "trades": total_trades,
+        "gross_profit": gross_profit,
+        "gross_loss": gross_loss,
         "wins": win_count,
         "losses": loss_count,
         "win_rate": win_rate,
@@ -1051,8 +895,15 @@ def main():
         df["losses"].sum()
     )
 
-    total_pnl = float(
-        df["pnl"].sum()
+    # Each symbol is tested with its own starting capital. These sums are
+    # pooled research statistics, not the result of one simultaneous portfolio.
+    total_pnl = float(df["pnl"].sum())
+    total_gross_profit = float(df["gross_profit"].sum())
+    total_gross_loss = float(df["gross_loss"].sum())
+    aggregate_pf = (
+        total_gross_profit / total_gross_loss
+        if total_gross_loss > 0
+        else (999.0 if total_gross_profit > 0 else 0.0)
     )
 
     weighted_win_rate = (
@@ -1111,7 +962,7 @@ def main():
 
     print()
     print("=" * 95)
-    print("FINAL RESULTS")
+    print("FINAL RESULTS — INDEPENDENT $100 TEST PER SYMBOL")
     print("=" * 95)
 
     print(
@@ -1148,8 +999,8 @@ def main():
     )
 
     print(
-        f"Total PnL           : "
-        f"{total_pnl:+.2f} USDT"
+        f"Sum of test PnL     : "
+        f"{total_pnl:+.2f} USDT (NOT a portfolio return)"
     )
 
     print(
@@ -1165,6 +1016,11 @@ def main():
     print(
         f"Average PF          : "
         f"{average_pf:.2f}"
+    )
+
+    print(
+        f"Pooled PF           : "
+        f"{aggregate_pf:.2f}"
     )
 
     print(
@@ -1259,33 +1115,34 @@ def main():
     print("SYSTEM VERDICT")
     print("=" * 95)
 
-    if total_trades < 30:
+    if total_trades < BACKTEST_MIN_TRADES:
 
         print(
-            "NOT ENOUGH TRADES FOR A RELIABLE VERDICT."
+            f"NOT ENOUGH TRADES: {total_trades} < {BACKTEST_MIN_TRADES}."
         )
 
     elif (
         total_pnl > 0
-        and average_pf > 1.0
-        and total_expectancy > 0
+        and aggregate_pf > 1.0
+        and (not REQUIRE_POSITIVE_EXPECTANCY or total_expectancy > 0)
+        and (worst_dd / 100.0) <= MAX_BACKTEST_DRAWDOWN
     ):
 
         print(
-            "POSITIVE RESULT: strategy is profitable "
-            "on this historical sample."
+            "POSITIVE IN-SAMPLE RESULT ONLY: this sample passes the configured "
+            "profit-factor, expectancy and drawdown checks."
         )
 
         print(
-            "NEXT STEP: robustness testing and "
-            "parameter validation."
+            "NEXT STEP: untouched out-of-sample and walk-forward tests; "
+            "this is not proof of future/live profitability."
         )
 
     else:
 
         print(
-            "NOT PROFITABLE ENOUGH: strategy needs "
-            "further improvement."
+            "NOT ACCEPTED: profitability, pooled PF, expectancy or "
+            "drawdown did not pass the configured checks."
         )
 
     print("=" * 95)

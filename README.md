@@ -1,22 +1,24 @@
-# Trading Bot V4
+# Trading Bot — research branch
 
 This version is a clean test build, not a promise of guaranteed profit.
 
 ## Changes from the previous test
 - Starting paper balance: 100 USDT
-- Maximum simultaneous positions: 5
-- Risk per trade: 1%
+- Maximum simultaneous positions: 3
+- Configured risk per trade: 0.75%
 - Position value cap: 20%
 - Higher-timeframe confirmation (1h)
 - 15m trend + momentum + volume + MACD + ADX filters
 - No trading on the still-forming candle
 - Fees and slippage included
 - Break-even and delayed trailing stop
-- Historical backtest included
+- Paginated historical backtest with next-candle-open entries, fees/slippage, conservative same-candle stop priority, and drawdown marking
+- Backtest runs are independent per symbol; aggregate P/L is not a real portfolio return
 
 ## Run
 ```bash
 pip install -r requirements.txt
+python -m unittest discover -s tests -v
 python backtest.py
 python main.py
 ```
@@ -30,4 +32,13 @@ Do not judge the system from 5-20 trades. Track:
 - Number of trades
 - Stability across symbols and periods
 
-A backtest result is not a guarantee of future performance.
+The built-in backtest is a research tool, not proof of an edge. Do not enable live trading from an in-sample result alone. Validate on untouched out-of-sample data and walk-forward periods first.
+
+## Railway state persistence
+The paper account (cash, open positions, stops, partial exits and statistics) is saved in SQLite. To preserve it across Railway redeploys, attach a Railway Volume mounted at `/data` and set this service variable:
+
+```text
+TRADING_BOT_DB_FILE=/data/trading_bot_v5.db
+```
+
+Without a persistent volume, SQLite snapshots may be lost when Railway replaces the container. Run only one bot instance against this account database; multiple writers could duplicate paper-account actions.

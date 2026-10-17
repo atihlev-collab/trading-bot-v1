@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from config import (
     START_BALANCE,
@@ -17,6 +17,7 @@ from config import (
 )
 
 from market_data import get_price
+from database import init_db, load_account_state, save_account_state
 
 
 class PaperTrader:
@@ -62,6 +63,89 @@ class PaperTrader:
         self.daily_date = (
             datetime.now(timezone.utc).date()
         )
+
+        # Restore the account snapshot. If a saved snapshot is corrupt or from
+        # an unknown version, fail loudly rather than silently resetting cash.
+        init_db()
+        state = load_account_state()
+        if state is not None:
+            required = {
+                "balance", "positions", "closed_trades", "realized_pnl",
+                "open_pnl", "total_trades", "wins", "losses",
+                "daily_loss", "daily_date",
+            }
+            missing = required.difference(state)
+            if missing:
+                raise RuntimeError(
+                    "Stored account state is incomplete; refusing to reset: "
+                    + ", ".join(sorted(missing))
+                )
+
+            if not isinstance(state["positions"], dict) or not isinstance(state["closed_trades"], list):
+                raise RuntimeError("Stored account state has invalid collections; refusing to reset")
+
+            self.start_balance = float(state.get("start_balance", START_BALANCE))
+            self.balance = float(state["balance"])
+            self.positions = state["positions"]
+            for symbol, pos in self.positions.items():
+                if not isinstance(pos, dict):
+                    raise RuntimeError(f"Stored position {symbol} is invalid")
+                opened = pos.get("opened")
+                if isinstance(opened, str):
+                    try:
+                        pos["opened"] = datetime.fromisoformat(opened)
+                    except ValueError as exc:
+                        raise RuntimeError(f"Stored position {symbol} has an invalid open time") from exc
+
+            self.closed_trades = state["closed_trades"]
+            self.realized_pnl = float(state["realized_pnl"])
+            self.open_pnl = float(state["open_pnl"])
+            self.total_trades = int(state["total_trades"])
+            self.wins = int(state["wins"])
+            self.losses = int(state["losses"])
+            self.daily_loss = float(state["daily_loss"])
+            try:
+                self.daily_date = date.fromisoformat(str(state["daily_date"]))
+            except ValueError as exc:
+                raise RuntimeError("Stored account state has an invalid daily date") from exc
+
+        self.max_daily_loss = self.start_balance * DAILY_LOSS_LIMIT
+        self._reset_day()
+        self._persist_state()
+
+    def _persist_state(self):
+        """Persist balance, positions and statistics after each state change."""
+        serialized_positions = {}
+        for symbol, pos in self.positions.items():
+            serialized = {}
+            for key, value in pos.items():
+                if isinstance(value, datetime):
+                    serialized[key] = value.isoformat()
+                elif isinstance(value, (str, int, float, bool)) or value is None:
+                    serialized[key] = value
+                elif hasattr(value, "item"):
+                    serialized[key] = value.item()
+                else:
+                    raise TypeError(
+                        f"Cannot persist position field {symbol}.{key}: "
+                        f"{type(value).__name__}"
+                    )
+            serialized_positions[symbol] = serialized
+
+        save_account_state({
+            "version": 1,
+            "start_balance": self.start_balance,
+            "balance": self.balance,
+            "positions": serialized_positions,
+            "closed_trades": self.closed_trades,
+            "realized_pnl": self.realized_pnl,
+            "open_pnl": self.open_pnl,
+            "total_trades": self.total_trades,
+            "wins": self.wins,
+            "losses": self.losses,
+            "daily_loss": self.daily_loss,
+            "daily_date": self.daily_date.isoformat(),
+        })
 
     # ==========================================
     # DAILY RESET
@@ -113,7 +197,8 @@ class PaperTrader:
 
             quantity = pos["quantity"]
 
-            total += price * quantity
+            estimated_exit_price = price * (1 - SLIPPAGE_RATE)
+            total += estimated_exit_price * quantity * (1 - FEE_RATE)
 
         return total
 
@@ -167,30 +252,19 @@ class PaperTrader:
             entry = pos["entry"]
             quantity = pos["quantity"]
 
-            # Unrealized gross P/L
-            gross_pnl = (
-                px - entry
-            ) * quantity
-
-            # Estimated exit fee
+            # Mark to a conservative estimated liquidation price, net of
+            # exit slippage and fee. The entry fee has already been paid.
+            estimated_exit_price = px * (1 - SLIPPAGE_RATE)
+            gross_pnl = (estimated_exit_price - entry) * quantity
             estimated_exit_fee = (
-                px
-                * quantity
-                * FEE_RATE
+                estimated_exit_price * quantity * FEE_RATE
             )
 
             # Entry fee was already paid when
             # position was opened.
-            allocated_entry_fee = (
-                pos.get("entry_fee", 0.0)
-                * (
-                    quantity
-                    / max(
-                        pos["initial_quantity"],
-                        1e-12,
-                    )
-                )
-            )
+            # entry_fee is reduced when a partial exit occurs, so it
+            # already represents the fee allocated to the remaining size.
+            allocated_entry_fee = pos.get("entry_fee", 0.0)
 
             total += (
                 gross_pnl
@@ -337,9 +411,14 @@ class PaperTrader:
         # SIGNAL DATA
         # ======================================
 
-        entry_raw = float(
-            signal["close"]
-        )
+        # The candle close is a historical signal reference, not a live
+        # fill price. Fetch a fresh quote; skip rather than enter at a stale
+        # close if the quote endpoint is unavailable.
+        try:
+            entry_raw = float(get_price(symbol))
+        except Exception as exc:
+            print(f"[SKIP OPEN] {symbol}: current price unavailable: {exc}")
+            return False
 
         atr_value = float(
             signal["atr"]
@@ -480,6 +559,8 @@ class PaperTrader:
 
             "entry": entry,
 
+            "atr": atr_value,
+
             "quantity": quantity,
 
             "initial_quantity": quantity,
@@ -503,6 +584,8 @@ class PaperTrader:
 
             "partial_taken": False,
 
+            "partial_realized_pnl": 0.0,
+
             "entry_fee": entry_fee,
 
             "opened": (
@@ -524,6 +607,16 @@ class PaperTrader:
                 "",
             ),
         }
+
+        # Persist the open before reporting success. If storage fails, revert
+        # the in-memory position and cash rather than pretending it is durable.
+        try:
+            self._persist_state()
+        except Exception as exc:
+            self.positions.pop(symbol, None)
+            self.balance += total_cost
+            print(f"[FAIL OPEN] {symbol}: account state could not be saved: {exc}")
+            return False
 
         # ======================================
         # LOG
@@ -620,9 +713,11 @@ class PaperTrader:
             )
         ):
 
+            # Use the ATR captured at entry. The paper trader polls quotes
+            # rather than candle ATR, so this keeps the trail deterministic.
             trail = (
                 pos["highest"]
-                - risk_unit
+                - float(pos.get("atr", risk_unit / max(ATR_STOP_MULT, 1e-12)))
                 * TRAILING_ATR
             )
 
@@ -648,8 +743,10 @@ class PaperTrader:
                 / 2
             )
 
+            partial_exit_price = price * (1 - SLIPPAGE_RATE)
+
             value = (
-                qty * price
+                qty * partial_exit_price
             )
 
             exit_fee = (
@@ -670,7 +767,7 @@ class PaperTrader:
             )
 
             pnl = (
-                (price - pos["entry"])
+                (partial_exit_price - pos["entry"])
                 * qty
                 - exit_fee
                 - entry_fee_part
@@ -682,6 +779,9 @@ class PaperTrader:
             )
 
             self.realized_pnl += pnl
+            pos["partial_realized_pnl"] = (
+                pos.get("partial_realized_pnl", 0.0) + pnl
+            )
 
             pos["entry_fee"] = max(
                 0.0,
@@ -727,6 +827,7 @@ class PaperTrader:
         # ======================================
 
         self._mark_open_pnl()
+        self._persist_state()
 
         return None
 
@@ -817,17 +918,17 @@ class PaperTrader:
         # STATISTICS
         # ======================================
 
+        # Count the full position as one trade, including any realized
+        # partial exit; otherwise win rate and profit factor omit that P/L.
+        trade_pnl = pnl + float(pos.get("partial_realized_pnl", 0.0))
+
         self.total_trades += 1
 
-        if pnl >= 0:
-
+        if trade_pnl >= 0:
             self.wins += 1
-
         else:
-
             self.losses += 1
-
-            self.daily_loss += abs(pnl)
+            self.daily_loss += abs(trade_pnl)
 
         # ======================================
         # OPEN P/L RESET
@@ -851,7 +952,8 @@ class PaperTrader:
 
             "quantity": quantity,
 
-            "pnl": pnl,
+            "pnl": trade_pnl,
+            "remaining_pnl": pnl,
 
             "quality": pos.get(
                 "quality",
@@ -872,11 +974,12 @@ class PaperTrader:
         self.closed_trades.append(
             trade
         )
+        self._persist_state()
 
         print(
             f"[CLOSE] {symbol} "
             f"{reason} "
-            f"PnL={pnl:+.4f}"
+            f"PnL={trade_pnl:+.4f}"
         )
 
         return trade
@@ -943,6 +1046,7 @@ class PaperTrader:
     def stats(self):
 
         self._mark_open_pnl()
+        self._persist_state()
 
         current_equity = self.equity()
 
