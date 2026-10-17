@@ -74,6 +74,7 @@ def main():
 
     log.info("=" * 70)
     log.info("TRADING BOT V4 STARTED")
+    log.info("SCANNER BUILD: closed-candle-candidate-diagnostics-2026-10-17")
     log.info("=" * 70)
     log.info("Start balance: %.2f USDT", START_BALANCE)
     log.info("Risk/trade: %.2f%%", trader.risk_percent)
